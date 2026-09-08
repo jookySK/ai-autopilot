@@ -1,0 +1,18 @@
+/* Jookas AI Autopilot – onboarding wizard (v1.6.0). Dynamic brand colors via --o3dw-p / --o3dw-a inline style. */
+.o3dw{max-width:760px;margin:24px 20px 60px 0;font-size:15px}
+.o3dw-hero{background:linear-gradient(120deg,var(--o3dw-p,#3858e9),var(--o3dw-a,#2bc6b4));color:#fff;border-radius:18px;padding:34px 38px;margin-bottom:26px}
+.o3dw-hero h1{color:#fff;margin:0 0 8px;font-size:26px}
+.o3dw-hero p{margin:0;opacity:.9;font-size:15px}
+.o3dw-card{background:#fff;border:1px solid #e9e6f2;border-radius:14px;padding:24px 28px;margin-bottom:20px;box-shadow:0 2px 10px rgba(43,35,80,.05)}
+.o3dw-card h2{margin:0 0 4px;font-size:17px;color:#2B2350}
+.o3dw-card .sub{color:#8b83a3;font-size:13px;margin:0 0 16px}
+.o3dw-field{margin-bottom:16px}
+.o3dw-field label{display:block;font-weight:600;color:#2B2350;margin-bottom:5px}
+.o3dw-field input[type=text],.o3dw-field input[type=password],.o3dw-field select,.o3dw-field textarea{width:100%;max-width:100%;border-radius:8px;border:1px solid #dcd6ea;padding:9px 12px;font-size:14px}
+.o3dw-field .hint{color:#8b83a3;font-size:12px;margin-top:4px}
+.o3dw-row{display:flex;gap:16px;flex-wrap:wrap}.o3dw-row .o3dw-field{flex:1;min-width:200px}
+.o3dw-colors{display:flex;gap:12px;flex-wrap:wrap}
+.o3dw-colors label{font-size:12px;text-align:center}
+.o3dw-submit{background:var(--o3dw-p,#3858e9);color:#fff;border:0;border-radius:10px;padding:14px 34px;font-size:16px;font-weight:700;cursor:pointer}
+.o3dw-steps{display:flex;gap:8px;margin-bottom:20px;font-size:12px;color:#8b83a3}
+.o3dw-steps span{background:#f2eefb;color:var(--o3dw-p,#3858e9);padding:4px 12px;border-radius:99px;font-weight:600}
