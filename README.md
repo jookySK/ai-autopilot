@@ -28,37 +28,21 @@
 
 **Insights.** Monthly usage dashboard (articles, images, estimated API cost) with the full history of all recorded months, a recent-runs log and per-article details.
 
-## Free version
+## What's included
 
-Everything above ships in the free plugin:
+One plugin — everything is included: no separate Pro build, no license activation.
 
 - Unlimited AI articles per month (fair use — the counters never block generation), as drafts or live on schedule
 - Any single AI provider of your choice: Anthropic Claude, OpenAI, Google Gemini or OpenRouter (200+ models behind one key)
 - Images from free stock libraries **or** AI image generation with your own API key
+- Product content from photos — bulk import with preview & approval, product descriptions generated from your images
+- Category descriptions and images for your shop's categories
+- Google Search Console queries as article topics (OAuth) + SERP research suggestions (Serper.dev)
 - Content series (multi-part article plans), social webhooks + auto product promotion, news-based topics
 - SEO fields for all four major plugins, internal links, article style templates
 - Bilingual UI (English / Slovak)
 
-## Jookas AI Autopilot Pro
-
-Pro is a separate plugin — the free version stays fully functional on its own. Pro adds:
-
-- **Product content from photos** — bulk import with preview & approval, product descriptions generated from your product images
-- **Category descriptions and images** for your shop's categories
-- **SERP research suggestions** (Serper.dev) — AI topic and series ideas based on what actually ranks in search results
-- **Google Search Console queries as article topics** (OAuth)
-
-14-day free trial, no credit card required. [Get Pro →](https://checkout.freemius.com/plugin/38271/plan/65500/)
-
-| | Free | Pro (separate plugin) |
-|---|---|---|
-| AI articles per month | Unlimited (fair use), draft or **live on schedule** | Same |
-| AI provider | Claude / OpenAI / Gemini / OpenRouter — one of your choice | Same |
-| Images | Stock photos **or** AI generation with your own key | Same, plus product & category content from photos |
-| Content series | Multi-part article plans included | + SERP-based topic & series suggestions (Serper.dev) |
-| Topics | Your keywords + Google News RSS | + GSC queries as topics |
-| E-commerce | Relevance-based product links in articles | Product-from-photo bulk import, category descriptions & images |
-| Social | Webhooks (Make.com / Buffer / Zapier) + auto promotion + AI post text | Same |
+> **Had Pro before?** Since v1.7.0 everything is in this one plugin — the separate Pro build and Freemius are retired. If you had a Pro subscription, every feature stays free for you; you can cancel it at [freemius.com](https://www.freemius.com/) without losing anything.
 
 ## Install
 
@@ -70,13 +54,13 @@ Get an API key from [Anthropic](https://console.anthropic.com/) · [OpenAI](http
 
 ## Privacy
 
-Your API keys are stored only in your own WordPress database and sent only to the AI provider you selected, when generating content. Your articles and settings are never collected by us. Every external connection (stock photo APIs, Google News RSS, IndexNow, sitemap ping, Freemius for Pro licensing) is documented with terms & privacy links in the [plugin readme](https://wordpress.org/plugins/jookas-ai-autopilot/).
+Your API keys are stored only in your own WordPress database and sent only to the AI provider you selected, when generating content. Your articles and settings are never collected by us. Every external connection (AI providers, stock photo APIs, Google News RSS, IndexNow, sitemap ping, Google Search Console OAuth, Serper.dev) is documented with terms & privacy links in the [plugin readme](https://wordpress.org/plugins/jookas-ai-autopilot/).
 
 ## Links
 
 - **WordPress.org:** https://wordpress.org/plugins/jookas-ai-autopilot/
 - **Releases (free zip):** https://github.com/jookySK/ai-autopilot/releases
-- **Pro (separate plugin, via Freemius):** [Get Pro](https://checkout.freemius.com/plugin/38271/plan/65500/)
+- **Formerly Pro:** all former Pro features are included since v1.7.0 — there is no separate build anymore
 
 ## License
 
