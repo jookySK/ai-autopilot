@@ -24,7 +24,7 @@ class O3DAI_Products {
 	}
 
 	public static function metabox() {
-		if ( ! post_type_exists( 'product' ) || O3DAI_License::is_free_build() ) {
+		if ( ! post_type_exists( 'product' ) ) { // v1.7.0 – produkty sú pre všetkých, free build sa už neskryvá
 			return;
 		}
 		add_meta_box( 'o3dai_product', o3dai_t( 'p_box_title' ), array( __CLASS__, 'render_box' ), 'product', 'side', 'high' );
@@ -43,7 +43,7 @@ class O3DAI_Products {
 	}
 
 	public static function row_action( $actions, $post ) {
-		if ( 'product' === $post->post_type && ! O3DAI_License::is_free_build() && current_user_can( 'edit_post', $post->ID ) ) {
+		if ( 'product' === $post->post_type && current_user_can( 'edit_post', $post->ID ) ) { // v1.7.0 – pre všetkých
 			$url = wp_nonce_url( admin_url( 'admin.php?action=o3dai_fill_product&post=' . $post->ID ), 'o3dai_fill_' . $post->ID );
 			$actions['o3dai_fill'] = '<a href="' . esc_url( $url ) . '">' . esc_html( o3dai_t( 'p_row_fill' ) ) . '</a>';
 			$url2 = wp_nonce_url( admin_url( 'admin.php?action=o3dai_propose&post=' . $post->ID ), 'o3dai_propose_' . $post->ID );
@@ -70,9 +70,6 @@ class O3DAI_Products {
 	}
 
 	public static function bulk_register( $actions ) {
-		if ( O3DAI_License::is_free_build() ) {
-			return $actions; // AI vyplnenie produktov je Pro funkcia — hromadné akcie v FREE buildi skryté
-		}
 		$actions['o3dai_fill_bulk'] = o3dai_t( 'p_bulk_fill' );
 		$actions['o3dai_propose_bulk'] = o3dai_t( 'p_bulk_propose' );
 		return $actions;
@@ -120,7 +117,7 @@ class O3DAI_Products {
 	}
 
 	public static function cat_row_action( $actions, $term ) {
-		if ( ! O3DAI_License::is_free_build() && current_user_can( 'manage_categories' ) ) {
+		if ( current_user_can( 'manage_categories' ) ) { // v1.7.0 – pre všetkých
 			$url = wp_nonce_url( admin_url( 'admin.php?action=o3dai_fill_cat&term=' . $term->term_id ), 'o3dai_cat_' . $term->term_id );
 			$actions['o3dai_fill_cat'] = '<a href="' . esc_url( $url ) . '">' . esc_html( o3dai_t( 'c_row_fill' ) ) . '</a>';
 		}
@@ -168,7 +165,7 @@ class O3DAI_Products {
 			$names[] = $p->post_title;
 		}
 
-		o3dai_log( 'Vypĺňam kategóriu „' . $term->name . '"…' );
+		o3dai_log( o3dai_t( 'log_cat_filling', array( 'x' => $term->name ) ) );
 
 		$system = 'Si copywriter a SEO špecialista pre e-shop. ' . $s['instructions'] . ' '
 			. 'Píšeš text kategórie, ktorý má uspieť vo vyhľadávaní a zároveň pomôcť zákazníkovi vybrať. '
@@ -187,7 +184,7 @@ class O3DAI_Products {
 
 		$raw = O3DAI_Providers::generate( $system, $user, 2000 );
 		if ( is_wp_error( $raw ) ) {
-			o3dai_log( 'Kategória „' . $term->name . '" – chyba: ' . $raw->get_error_message() );
+			o3dai_log( o3dai_t( 'log_cat_err', array( 'x' => $term->name, 'err' => $raw->get_error_message() ) ) );
 			return;
 		}
 		update_option( 'o3dai_last_raw', mb_substr( (string) $raw, 0, 6000 ), false );
@@ -201,7 +198,7 @@ class O3DAI_Products {
 			}
 		}
 		if ( empty( $a['DESCRIPTION'] ) ) {
-			o3dai_log( 'Kategória „' . $term->name . '": odpoveď sa nepodarilo naparsovať.' );
+			o3dai_log( o3dai_t( 'log_cat_parse_fail', array( 'x' => $term->name ) ) );
 			return;
 		}
 
@@ -218,14 +215,14 @@ class O3DAI_Products {
 
 		o3dai_track_kind( 'categories' );
 		O3DAI_Progress::done( 'cat_' . $term_id, true );
-		o3dai_log( 'Kategória „' . $term->name . '" vyplnená (popis + SEO).' );
+		o3dai_log( o3dai_t( 'log_cat_done', array( 'x' => $term->name ) ) );
 	}
 
 	/** Vygeneruje a priradí obrázok kategórie (WooCommerce thumbnail taxonómie) */
 	public static function category_image( $term_id, $cat_name, $product_names = array() ) {
 		$s = o3dai_get_settings();
-		if ( 'ai' !== ( $s['image_mode'] ?? 'ids' ) ) {
-			return; // obrázky generujeme len keď je zapnutý AI režim
+		if ( ! in_array( (string) ( $s['image_mode'] ?? 'ids' ), array( 'ai', 'local' ), true ) ) {
+			return; // obrázky generujeme len keď je zapnutý AI režim (v1.9.0: alebo lokálny PC)
 		}
 		// námet: z názvov produktov v kategórii poskladáme scénu
 		$subject = $cat_name;
@@ -234,22 +231,24 @@ class O3DAI_Products {
 		}
 		$prompt = 'Category banner image for an online shop (' . ( $s['brand_desc'] ?? '' ) . '). '
 			. 'Subject: ' . $subject . ', arranged together as a group. '
-			. 'Composition: several items grouped nicely, wide banner-friendly layout, plenty of soft background space. '
-			. 'Style: ' . stripslashes( $s['image_style'] );
+			. 'Composition: several items grouped nicely, wide banner-friendly layout, plenty of soft background space.';
+		if ( '' !== trim( (string) $s['image_style'] ) ) {
+			$prompt .= ' Style: ' . stripslashes( $s['image_style'] );
+		}
 		update_option( 'o3dai_last_img_prompt', $prompt, false );
 
 		$png = O3DAI_Providers::generate_image( $prompt );
 		if ( is_wp_error( $png ) ) {
-			o3dai_log( 'Obrázok kategórie „' . $cat_name . '": ' . $png->get_error_message() );
+			o3dai_log( o3dai_t( 'log_cat_img_err', array( 'x' => $cat_name, 'err' => $png->get_error_message() ) ) );
 			return;
 		}
 		$att = O3DAI_Generator::attach_image( 0, $png, $cat_name . ' – kategória' );
 		if ( ! $att ) {
-			o3dai_log( 'Obrázok kategórie „' . $cat_name . '": uloženie zlyhalo.' );
+			o3dai_log( o3dai_t( 'log_cat_img_save_fail', array( 'x' => $cat_name ) ) );
 			return;
 		}
 		update_term_meta( $term_id, 'thumbnail_id', intval( $att ) ); // WooCommerce obrázok kategórie
-		o3dai_log( 'Obrázok kategórie „' . $cat_name . '" vytvorený.' );
+		o3dai_log( o3dai_t( 'log_cat_img_done', array( 'x' => $cat_name ) ) );
 	}
 
 	/** Zmenší obrázok, aby sme neposielali zbytočne veľké dáta do API */
@@ -289,11 +288,11 @@ class O3DAI_Products {
 		}
 		$att_id = get_post_thumbnail_id( $post_id );
 		if ( ! $att_id ) {
-			o3dai_log( 'Produkt #' . $post_id . ': chýba hlavný obrázok.' );
+			o3dai_log( o3dai_t( 'log_prod_no_image', array( 'id' => $post_id ) ) );
 			O3DAI_Progress::done( 'product_' . $post_id, false );
 			return;
 		}
-		o3dai_log( 'Vypĺňam produkt #' . $post_id . ' z fotiek…' );
+		o3dai_log( o3dai_t( 'log_prod_filling', array( 'id' => $post_id ) ) );
 
 		// hlavný obrázok + galéria (max 4 spolu, nech nemíňame veľa)
 		$att_ids = array( $att_id );
@@ -315,7 +314,7 @@ class O3DAI_Products {
 			}
 		}
 		if ( ! $imgs ) {
-			o3dai_log( 'Produkt #' . $post_id . ': obrázky sa nepodarilo načítať.' );
+			o3dai_log( o3dai_t( 'log_prod_img_load_fail', array( 'id' => $post_id ) ) );
 			O3DAI_Progress::done( 'product_' . $post_id, false );
 			return;
 		}
@@ -360,7 +359,7 @@ class O3DAI_Products {
 
 		$raw = O3DAI_Providers::generate_vision( $system, $user, $imgs, 'image/jpeg', 2800 );
 		if ( is_wp_error( $raw ) ) {
-			o3dai_log( 'Produkt #' . $post_id . ' – chyba: ' . $raw->get_error_message() );
+			o3dai_log( o3dai_t( 'log_prod_err', array( 'id' => $post_id, 'err' => $raw->get_error_message() ) ) );
 			O3DAI_Progress::done( 'product_' . $post_id, false );
 			return;
 		}
@@ -375,7 +374,7 @@ class O3DAI_Products {
 			}
 		}
 		if ( empty( $a['NAME'] ) || empty( $a['DESCRIPTION'] ) ) {
-			o3dai_log( 'Produkt #' . $post_id . ': odpoveď sa nepodarilo naparsovať.' );
+			o3dai_log( o3dai_t( 'log_prod_parse_fail', array( 'id' => $post_id ) ) );
 			O3DAI_Progress::done( 'product_' . $post_id, false );
 			return;
 		}
@@ -432,7 +431,7 @@ class O3DAI_Products {
 
 		o3dai_track_kind( 'products' );
 		O3DAI_Progress::done( 'product_' . $post_id, true );
-		o3dai_log( 'Produkt #' . $post_id . ' vyplnený z fotky: ' . $a['NAME'] );
+		o3dai_log( o3dai_t( 'log_prod_filled', array( 'id' => $post_id, 'x' => $a['NAME'] ) ) );
 	}
 
 
@@ -482,16 +481,16 @@ class O3DAI_Products {
 		}
 		if ( ! O3DAI_License::has_api_key() ) {
 			O3DAI_Progress::done( 'prop_' . $post_id, false );
-			o3dai_log( 'Produkt #' . $post_id . ': chýba API kľúč.' );
+			o3dai_log( o3dai_t( 'log_prod_no_key', array( 'id' => $post_id ) ) );
 			return;
 		}
 		$att_id = get_post_thumbnail_id( $post_id );
 		if ( ! $att_id ) {
-			o3dai_log( 'Produkt #' . $post_id . ': chýba hlavný obrázok.' );
+			o3dai_log( o3dai_t( 'log_prod_no_image', array( 'id' => $post_id ) ) );
 			O3DAI_Progress::done( 'prop_' . $post_id, false );
 			return;
 		}
-		o3dai_log( 'Prípravám návrh pre produkt #' . $post_id . '…' );
+		o3dai_log( o3dai_t( 'log_prod_proposal_prep', array( 'id' => $post_id ) ) );
 		// hlavný obrázok + galéria (max 4, rovnaké obmedzenie ako pri vypĺňaní)
 		$att_ids = array( $att_id );
 		$gallery = get_post_meta( $post_id, '_product_image_gallery', true );
@@ -507,7 +506,7 @@ class O3DAI_Products {
 			if ( $one ) { $imgs[] = $one; }
 		}
 		if ( ! $imgs ) {
-			o3dai_log( 'Produkt #' . $post_id . ': obrázky sa nepodarilo načítať.' );
+			o3dai_log( o3dai_t( 'log_prod_img_load_fail', array( 'id' => $post_id ) ) );
 			O3DAI_Progress::done( 'prop_' . $post_id, false );
 			return;
 		}
@@ -545,7 +544,7 @@ class O3DAI_Products {
 		. 'Popíš presne to, čo vidíš na fotke – farby, tvar, detaily. Nevymýšľaj vlastnosti, ktoré na fotke nie sú.';
 		$raw = O3DAI_Providers::generate_vision( $system, $user, $imgs, 'image/jpeg', 2800 );
 		if ( is_wp_error( $raw ) ) {
-			o3dai_log( 'Produkt #' . $post_id . ' (návrh) – chyba: ' . $raw->get_error_message() );
+			o3dai_log( o3dai_t( 'log_prod_proposal_err', array( 'id' => $post_id, 'err' => $raw->get_error_message() ) ) );
 			O3DAI_Progress::done( 'prop_' . $post_id, false );
 			return;
 		}
@@ -556,7 +555,7 @@ class O3DAI_Products {
 			}
 		}
 		if ( empty( $a['NAME'] ) || empty( $a['DESCRIPTION'] ) ) {
-			o3dai_log( 'Produkt #' . $post_id . ' (návrh): odpoveď sa nepodarilo naparsovať.' );
+			o3dai_log( o3dai_t( 'log_prod_proposal_parse_fail', array( 'id' => $post_id ) ) );
 			O3DAI_Progress::done( 'prop_' . $post_id, false );
 			return;
 		}
@@ -592,7 +591,7 @@ class O3DAI_Products {
 		$props = array_slice( $props, -50, null, true );
 		update_option( 'o3dai_proposals', $props, false );
 		O3DAI_Progress::done( 'prop_' . $post_id, true );
-		o3dai_log( 'Návrh pre produkt #' . $post_id . ' pripravený — čaká na schválenie.' );
+		o3dai_log( o3dai_t( 'log_prod_proposal_ready', array( 'id' => $post_id ) ) );
 	}
 
 	/** Schváli návrh a zapíše ho do produktu (v1.4.11) */
@@ -600,7 +599,7 @@ class O3DAI_Products {
 		$post_id = intval( $post_id );
 		$props   = get_option( 'o3dai_proposals', array() );
 		if ( ! is_array( $props ) || ! isset( $props[ $post_id ] ) ) {
-			o3dai_log( 'Schvaľovanie zlyhalo: produkt #' . $post_id . ' nemá uložený návrh.' );
+			o3dai_log( o3dai_t( 'log_approve_fail_nostored', array( 'id' => $post_id ) ) );
 			return false;
 		}
 		$p = $props[ $post_id ];
@@ -608,7 +607,7 @@ class O3DAI_Products {
 			return true; // už schválený
 		}
 		if ( empty( $p['description'] ) || empty( $p['name'] ) ) {
-			o3dai_log( 'Schvaľovanie zlyhalo: návrh produktu #' . $post_id . ' je neúplný.' );
+			o3dai_log( o3dai_t( 'log_approve_fail_incomplete', array( 'id' => $post_id ) ) );
 			return false;
 		}
 		wp_update_post( array(
@@ -637,7 +636,7 @@ class O3DAI_Products {
 		$props[ $post_id ] = $p;
 		update_option( 'o3dai_proposals', $props, false );
 		o3dai_track_kind( 'products' );
-		o3dai_log( 'Produkt #' . $post_id . ' schválený a uložený: ' . $p['name'] );
+		o3dai_log( o3dai_t( 'log_prod_approved', array( 'id' => $post_id, 'x' => $p['name'] ) ) );
 		return true;
 	}
 
@@ -648,7 +647,7 @@ class O3DAI_Products {
 		if ( ! is_array( $props ) || ! isset( $props[ $post_id ] ) ) { return; }
 		$props[ $post_id ]['status'] = 'rejected';
 		update_option( 'o3dai_proposals', $props, false );
-		o3dai_log( 'Návrh produktu #' . $post_id . ' odmietnutý.' );
+		o3dai_log( o3dai_t( 'log_proposal_rejected', array( 'id' => $post_id ) ) );
 	}
 
 	/** Odstráni návrh zo zoznamu (produkt sa nezmení) */
@@ -658,7 +657,7 @@ class O3DAI_Products {
 		if ( ! is_array( $props ) || ! isset( $props[ $post_id ] ) ) { return; }
 		unset( $props[ $post_id ] );
 		update_option( 'o3dai_proposals', $props, false );
-		o3dai_log( 'Návrh produktu #' . $post_id . ' odstránený.' );
+		o3dai_log( o3dai_t( 'log_proposal_removed', array( 'id' => $post_id ) ) );
 	}
 }
 
