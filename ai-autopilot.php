@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Jookas AI Autopilot
  * Description: Automatically generates and publishes SEO articles and product content with AI (Claude / OpenAI / Gemini). Learns from your existing content, adds internal links, optimized images (AI or free stock), and SEO fields (Yoast, Rank Math, SEOPress, AIOSEO).
- * Version: 1.6.2
+ * Version: 1.9.14
  * Author: Jookas
  * Text Domain: jookas-ai-autopilot
  * License: GPLv2 or later
@@ -11,66 +11,9 @@
 
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
-/**
- * Freemius SDK — bootstrap (v1.5.1).
- * Vložený AS IS z Freemius wizardu (plugin ID 38271, premium slug: ai-autopilot-pro).
- */
-if ( function_exists( 'o3dai_fs' ) ) {
-	o3dai_fs()->set_basename( true, __FILE__ );
-} else {
-	/**
-	 * DO NOT REMOVE THIS IF, IT IS ESSENTIAL FOR THE
-	 * `function_exists` CALL ABOVE TO PROPERLY WORK.
-	 */
-	if ( ! function_exists( 'o3dai_fs' ) ) {
-    // Create a helper function for easy SDK access.
-    function o3dai_fs() {
-        global $o3dai_fs;
 
-        if ( ! isset( $o3dai_fs ) ) {
-            // Include Freemius SDK.
-            require_once dirname( __FILE__ ) . '/vendor/freemius/start.php';
-
-            $o3dai_fs = fs_dynamic_init( array(
-                'id'                  => '38271',
-                'slug'                => 'ai-autopilot',
-                'premium_slug'        => 'ai-autopilot-pro',
-                'type'                => 'plugin',
-                'public_key'          => 'pk_f5c0b5d094276b186cc6f5e601ac4',
-                'is_premium'          => true,
-                'premium_suffix'      => 'Pro',
-                // If your plugin is a serviceware, set this option to false.
-                'has_premium_version' => true,
-                'has_addons'          => false,
-                'has_paid_plans'      => true,
-                'is_org_compliant'    => true,
-                // Automatically removed in the free version. If you're not using the
-                // auto-generated free version, delete this line before uploading to wp.org.
-                'wp_org_gatekeeper'   => 'OA7#BoRiBNqdf52FvzEf!!074aRLPs8fspif$7K1#4u4Csys1fQlCecVcUTOs2mcpeVHi#C2j9d09fOTvbC0HloPT7fFee5WdS3G',
-                'trial'               => array(
-                    'days'               => 14,
-                    'is_require_payment' => false,
-                ),
-                'menu'                => array(
-                    // Náš skutočný menu slug (add_menu_page v class-admin.php), nie slug pluginu.
-                    'slug'           => 'o3dai',
-                ),
-            ) );
-        }
-
-        return $o3dai_fs;
-    }
-
-    // Init Freemius.
-    o3dai_fs();
-    // Signal that SDK was initiated.
-		do_action( 'o3dai_fs_loaded' );
-	}
-}
-
-
-define( 'O3DAI_VERSION', '1.6.2' );
-// v1.6.0 – FREE build (wp.org) má true; build skript to prepne. Pro moduly sa vo FREE zipi fyzicky neposielajú.
+define( 'O3DAI_VERSION', '1.9.14' );
+// v1.7.0 – jediný build, všetky funkcie sú free; Freemius SDK odstránený (flag zostáva pre kompatibilitu volaní).
 define( 'O3DAI_FREE_BUILD', true );
 define( 'O3DAI_DIR', plugin_dir_path( __FILE__ ) );
 
@@ -79,14 +22,12 @@ require_once O3DAI_DIR . 'includes/class-license.php';
 require_once O3DAI_DIR . 'includes/class-providers.php';
 require_once O3DAI_DIR . 'includes/class-seo.php';
 require_once O3DAI_DIR . 'includes/class-stock.php';
-// v1.6.0 – GSC a SERP sú Pro moduly; vo FREE buildi (wp.org) sa tieto súbory neposielajú,
-// aby tu neboli lokálne funkcie „zamknuté za licenčiou“ (trialware pravidlo directory).
-if ( ! O3DAI_License::is_free_build() ) {
-	require_once O3DAI_DIR . 'includes/class-gsc.php';
-	require_once O3DAI_DIR . 'includes/class-serp.php';
-}
+// v1.7.0 – GSC a SERP sú súčasťou jedného free buildu — načítajú sa bezpodmienečne.
+require_once O3DAI_DIR . 'includes/class-gsc.php';
+require_once O3DAI_DIR . 'includes/class-serp.php';
 require_once O3DAI_DIR . 'includes/class-generator.php';
 require_once O3DAI_DIR . 'includes/class-admin.php';
+// v1.7.0 – produktový modul je súčasťou jedného free buildu — načítava sa bezpodmienečne.
 require_once O3DAI_DIR . 'includes/class-products.php';
 require_once O3DAI_DIR . 'includes/class-progress.php';
 require_once O3DAI_DIR . 'includes/class-wizard.php';
@@ -145,16 +86,32 @@ function o3dai_defaults() {
 		'api_key_openai' => '',
 		'api_key_gemini' => '',
 		'api_key_openrouter' => '',
-		'model'          => 'claude-sonnet-4-6',
+		'model'          => 'claude-sonnet-5', // v1.6.11 – aktuálna generácia (staré modely ostávajú dostupné cez „Vlastný model…“)
 		'publish_status' => 'draft',
 		'hour'           => 7,
 		'weekdays'       => '1,2,3,4,5,6,7',
 		'category_id'    => 0,
 		'featured_ids'   => '',
 		'image_mode'     => 'ids',
-		'image_model'    => 'gpt-image-1',
+		'image_model'    => 'gpt-image-2.5-flare', // v1.6.11 – aktuálna generácia (rýchly/bežný); Sunburst = kvalita
+		// v1.9.0 – Lokálny PC: generovanie obrázkov cez Stability Matrix / ComfyUI
+		'image_local_url'      => '',   // napr. http://192.168.x.x:8188 (ComfyUI)
+		'image_local_model'    => '',   // checkpoint; prázdne = prvý dostupný zo servera
+		'image_local_negative' => '',   // prázdne = default "text, watermark, logo"
+		'image_local_steps'    => 20,
+		'image_local_cfg'      => 7,
+		'image_local_width'    => 1152,
+		'image_local_height'   => 768,
+		// v1.9.x – Lokálny PC pre text (Ollama / LM Studio)
+		'text_local_url'     => '',
+		'text_local_model'   => '',
+		// v1.9.x – Lokálny PC pre text priamo cez ComfyUI (TextGenerate — Gemma 4 a pod.)
+		'text_comfy_url'     => '', // prázdne = použiť image_local_url (ten istý ComfyUI)
+		'text_comfy_model'   => '', // súbor z models/text_encoders; prázdne = auto (gemma4_e4b a pod.)
 		'body_images'    => 0,
 		'internal_linking' => 0,
+		// v1.6.6 – produktové odkazy len pri reálnej relevance (vypnuté = CTA vedie na kontakt/úvodnú)
+		'product_links'   => 1,
 		'gsc_queries'    => '',
 		'webhook_url'    => '',
 		'webhook_products' => '',
@@ -172,7 +129,7 @@ function o3dai_defaults() {
 		'serper_key'     => '',
 		'progress_mode'  => 'background',
 		// --- Témy z internetu (aktuálne správy / RSS) ---
-		'news_keywords'  => 'best, top 10, tips, guide',
+		'news_keywords'  => '', // prázdne = news témy sa nesťahujú; v UI je placeholder s príkladom
 		'news_count'     => 8,
 		'news_use_ai'    => 1,
 		'news_context'   => '',
@@ -198,16 +155,16 @@ function o3dai_defaults() {
 		'onboarded'      => 0,
 		'ui_lang'        => 'en',
 		'simulate_free'  => 0,
-		'image_style'    => 'Soft, friendly illustration, warm pastel palette, soft light, no text, no watermark.',
+		'image_style'    => '', // prázdne = prompt bez Style časti; v UI je placeholder s príkladom
 		'instructions'   => "Write in a clear, friendly tone. 600-900 words, H2 subheadings, practical tips, and natural internal links.",
 	);
 }
 
 function o3dai_get_settings() {
 	$s = wp_parse_args( get_option( 'o3dai_settings', array() ), o3dai_defaults() );
-	// migrácia zrušených Imagen ID na funkčné Nano Banana
+	// migrácia zrušených Imagen ID na aktuálny Gemini image model (v1.6.11)
 	if ( in_array( $s['image_model'], array( 'imagen-fast', 'imagen-standard', 'imagen-ultra', 'gemini-flash-image' ), true ) ) {
-		$s['image_model'] = 'gemini-2.5-flash-image';
+		$s['image_model'] = 'gemini-3-pro-image';
 	}
 	return $s;
 }
@@ -286,12 +243,12 @@ add_action( 'o3dai_daily_event', function () {
 	// Vybrané dni v týždni (v1.4.10) — ak dnes nie je vybraný deň, beh sa pokojne preskočí
 	$days  = o3dai_weekdays_list();
 	if ( empty( $days ) ) {
-		o3dai_log( 'Preskočené — nie je vybraný žiadny deň v týždni.' );
+		o3dai_log( o3dai_t( 'log_skip_noday' ) );
 		return;
 	}
 	$today = intval( current_time( 'N' ) );
 	if ( ! in_array( $today, $days, true ) ) {
-		o3dai_log( o3dai_t( 'n_skip_day' ) . ' (vybrané: ' . implode( ',', array_map( 'intval', $days ) ) . ')' );
+		o3dai_log( o3dai_t( 'n_skip_day' ) . ' ' . o3dai_t( 'log_days_selected', array( 'x' => implode( ',', array_map( 'intval', $days ) ) ) ) );
 		return;
 	}
 	O3DAI_Generator::run_daily();
@@ -357,30 +314,30 @@ function o3dai_template_fields() {
 /* Jednorazové behy na pozadí (spúšťané tlačidlami v admine) – chyby sa vždy píšu do logu */
 add_action( 'o3dai_run_once', function () {
 	$res = O3DAI_Generator::run_daily();
-	if ( is_wp_error( $res ) ) { o3dai_log( 'CHYBA (beh): ' . $res->get_error_message() ); }
+	if ( is_wp_error( $res ) ) { o3dai_log( o3dai_t( 'log_err_run', array( 'err' => $res->get_error_message() ) ) ); }
 } );
 add_action( 'o3dai_topics_once', function () {
 	$res = O3DAI_Generator::generate_topics();
-	if ( is_wp_error( $res ) ) { o3dai_log( 'CHYBA (témy): ' . $res->get_error_message() ); }
+	if ( is_wp_error( $res ) ) { o3dai_log( o3dai_t( 'log_err_topics', array( 'err' => $res->get_error_message() ) ) ); }
 } );
 add_action( 'o3dai_series_once', function ( $theme ) {
 	$res = O3DAI_Generator::generate_series( (string) $theme );
-	if ( is_wp_error( $res ) ) { o3dai_log( 'CHYBA (séria): ' . $res->get_error_message() ); }
+	if ( is_wp_error( $res ) ) { o3dai_log( o3dai_t( 'log_err_series', array( 'err' => $res->get_error_message() ) ) ); }
 } );
 // Návrhy tém a sérií bežia cez O3DAI_SERP (Pro modul – vo FREE buildi trieda nemusí existovať)
 if ( class_exists( 'O3DAI_SERP' ) ) {
 	add_action( 'o3dai_suggest_once', function () {
 		$res = O3DAI_SERP::suggest_topics( 8 );
-		if ( is_wp_error( $res ) ) { o3dai_log( 'CHYBA (návrhy): ' . $res->get_error_message() ); }
+		if ( is_wp_error( $res ) ) { o3dai_log( o3dai_t( 'log_err_suggest', array( 'err' => $res->get_error_message() ) ) ); }
 	} );
 	add_action( 'o3dai_suggest_series_once', function () {
 		$res = O3DAI_SERP::suggest_series( 5 );
-		if ( is_wp_error( $res ) ) { o3dai_log( 'CHYBA (návrhy sérií): ' . $res->get_error_message() ); }
+		if ( is_wp_error( $res ) ) { o3dai_log( o3dai_t( 'log_err_suggest_series', array( 'err' => $res->get_error_message() ) ) ); }
 	} );
 }
 add_action( 'o3dai_news_once', function () {
 	$res = O3DAI_Generator::generate_news_topics();
-	if ( is_wp_error( $res ) ) { o3dai_log( 'CHYBA (news): ' . $res->get_error_message() ); }
+	if ( is_wp_error( $res ) ) { o3dai_log( o3dai_t( 'log_err_news', array( 'err' => $res->get_error_message() ) ) ); }
 } );
 add_action( 'o3dai_regen_text', function ( $post_id ) {
 	O3DAI_Generator::regenerate_text( intval( $post_id ) );
@@ -475,12 +432,12 @@ add_action( 'admin_enqueue_scripts', function () {
 	$o3d_tab_keep = '';
 	if ( isset( $_POST['o3d_tab'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Missing -- read again in handle_save() where the nonce is checked
 		$o3d_tab_keep = sanitize_key( wp_unslash( $_POST['o3d_tab'] ) ); // phpcs:ignore WordPress.Security.NonceVerification.Missing -- nonce verified in handle_save(); re-read only to keep the active tab after redirect
-		if ( ! in_array( $o3d_tab_keep, array( 'overview', 'topics', 'products', 'settings', 'debug' ), true ) ) {
+		if ( ! in_array( $o3d_tab_keep, array( 'overview', 'topics', 'products', 'settings', 'test', 'debug' ), true ) ) {
 			$o3d_tab_keep = '';
 		}
 	}
 	wp_enqueue_script( 'o3dai-tabs', plugins_url( 'assets/js/tabs.js', __FILE__ ), array(), O3DAI_VERSION, true );
-	wp_add_inline_script( 'o3dai-tabs', 'window.O3DAI_TABS=' . wp_json_encode( array( 'keep' => $o3d_tab_keep ) ) );
+	wp_add_inline_script( 'o3dai-tabs', 'window.O3DAI_TABS=' . wp_json_encode( array( 'keep' => $o3d_tab_keep ) ), 'before' ); // v1.6.10 – config MUSÍ byť pred JS: default "after" sa vypíše po spustení IIFE, ktoré cfg hneď číta
 
 	$o3d_s = o3dai_get_settings();
 	wp_enqueue_script( 'o3dai-model', plugins_url( 'assets/js/model-select.js', __FILE__ ), array(), O3DAI_VERSION, true );
@@ -492,9 +449,21 @@ add_action( 'admin_enqueue_scripts', function () {
 				'modelId'     => 'o3d-model',
 				'models'      => o3dai_models(),
 				'current'     => (string) $o3d_s['model'],
-				'customLabel' => o3dai_t( 'model_custom' ),
+				'customLabel'  => o3dai_t( 'model_custom' ),
+				'customSuffix' => o3dai_t( 'model_custom_suffix' ), // v1.6.13 – prívlastok k vlastnému modelu (bol napevno SK aj v JS)
+				// v1.9.x – lokálni provideri: dropdown modelov sa doplní reálnym zoznamom zo servera (ComfyUI / Ollama / LM Studio)
+				'localAjax'   => array(
+					'ajaxUrl'      => admin_url( 'admin-ajax.php' ),
+					'nonce'        => wp_create_nonce( 'o3dai_local' ),
+					'loadingLabel' => o3dai_t( 'mdl_loading' ),
+					'providers'    => array(
+						'comfyui'  => array( 'action' => 'o3dai_text_comfy_models', 'urlInput' => 'text_comfy_url', 'fallbackUrlInput' => 'image_local_url', 'mirrorTo' => 'select[name="text_comfy_model"]' ),
+						'local'    => array( 'action' => 'o3dai_local_text_models', 'urlInput' => 'text_local_url', 'mirrorTo' => 'select[name="text_local_model"]' ),
+					),
+				),
 			)
-		)
+		),
+		'before' // v1.6.10 – config pred spustením model-select.js (default "after" = po spustení IIFE → dropdown bol vždy prázdny)
 	);
 
 	wp_enqueue_script( 'o3dai-news-suggest', plugins_url( 'assets/js/news-suggest.js', __FILE__ ), array(), O3DAI_VERSION, true );
@@ -511,39 +480,52 @@ add_action( 'admin_enqueue_scripts', function () {
 					'error'   => o3dai_t( 'news_suggest_error' ),
 				),
 			)
-		)
+		),
+		'before' // v1.6.10 – config pred spustením news-suggest.js (rovnaký dôvod ako model-select; inak XHR letí do undefined URL)
 	);
 } );
 
-/** Aktuálne odporúčané textové modely podľa providera (08/2026).
+/** Aktuálne odporúčané textové modely podľa providera (09/2026).
  *  „…-latest" aliasy ukazujú na najnovší stabilný model, takže sa nezastarajú. */
 function o3dai_models() {
+	// v1.6.13 – popisky cez i18n (o3dai_t): predtým boli napevno slovensky aj pri EN rozhraní
 	return array(
 		'claude' => array(
-			'claude-sonnet-4-6'  => 'Claude Sonnet 4.6 (odporúčané)',
-			'claude-haiku-4-5'   => 'Claude Haiku 4.5 (lacný, rýchly)',
-			'claude-opus-4-8'    => 'Claude Opus 4.8 (najsilnejší)',
+			'claude-sonnet-5'   => o3dai_t( 'mdl_claude_sonnet5' ),
+			'claude-fable-5-1'  => o3dai_t( 'mdl_claude_fable5' ),
+			'claude-opus-5'     => o3dai_t( 'mdl_claude_opus5' ),
+			'claude-haiku-4-5'  => o3dai_t( 'mdl_claude_haiku45' ),
 		),
 		'openai' => array(
-			'gpt-4o'             => 'GPT-4o (odporúčané)',
-			'gpt-4o-mini'        => 'GPT-4o mini (lacný)',
-			'gpt-4.1'            => 'GPT-4.1',
+			'gpt-5.6-terra'     => o3dai_t( 'mdl_gpt_terra' ),
+			'gpt-6-astra'       => o3dai_t( 'mdl_gpt_astra' ),
+			'gpt-5.6-sol'       => o3dai_t( 'mdl_gpt_sol' ),
+			'gpt-5.6-luna'      => o3dai_t( 'mdl_gpt_luna' ),
 		),
 		'gemini' => array(
-			'gemini-flash-latest'    => 'Gemini Flash (najnovší, odporúčané)',
-			'gemini-3.7-flash'       => 'Gemini 3.7 Flash',
-			'gemini-3.6-flash'       => 'Gemini 3.6 Flash',
-			'gemini-flash-lite-latest' => 'Gemini Flash-Lite (lacný)',
+			'gemini-flash-latest'    => o3dai_t( 'mdl_gem_flash_latest' ),
+			'gemini-3.8-flash'       => o3dai_t( 'mdl_gem_38flash' ),
+			'gemini-flash-lite-latest' => o3dai_t( 'mdl_gem_flashlite' ),
 		),
 		'openrouter' => array(
-			'openrouter/auto'                   => 'Auto – najlepší model pre danú úlohu (odporúčané)',
-			'anthropic/claude-sonnet-4.5'       => 'Claude Sonnet 4.5',
-			'anthropic/claude-haiku-4.5'        => 'Claude Haiku 4.5 (lacný)',
-			'openai/gpt-5'                      => 'GPT-5',
-			'openai/gpt-4o'                     => 'GPT-4o',
-			'google/gemini-2.5-flash'           => 'Gemini 2.5 Flash',
-			'meta-llama/llama-3.3-70b-instruct' => 'Llama 3.3 70B (lacný)',
-			'deepseek/deepseek-chat'            => 'DeepSeek (veľmi lacný)',
+			'openrouter/auto'                   => o3dai_t( 'mdl_or_auto' ),
+			'anthropic/claude-sonnet-5'         => o3dai_t( 'mdl_or_sonnet5' ),
+			'anthropic/claude-haiku-4.5'        => o3dai_t( 'mdl_or_haiku45' ),
+			'openai/gpt-6-astra'                => o3dai_t( 'mdl_or_astra' ),
+			'google/gemini-2.5-flash'           => o3dai_t( 'mdl_or_gem25flash' ),
+			'meta-llama/llama-3.3-70b-instruct' => o3dai_t( 'mdl_or_llama33' ),
+			'deepseek/deepseek-chat'            => o3dai_t( 'mdl_or_deepseek' ),
+		),
+		// v1.9.x – Lokálny PC (Ollama / LM Studio) — predvoľby; ľubovoľný iný model cez pole URL/model v Nastaveniach
+		'local' => array(
+			'qwen3:14b'         => o3dai_t( 'mdl_local_qwen3_14b' ),
+			'gemma3:27b-it-qat' => o3dai_t( 'mdl_local_gemma_27b' ),
+			'deepseek-r1:14b'   => o3dai_t( 'mdl_local_deepseek_r1' ),
+			'llama3.1:8b'       => o3dai_t( 'mdl_local_llama_8b' ),
+		),
+		// v1.9.x – Lokálny PC cez ComfyUI (TextGenerate): konkrétny súbor sa vyberá z models/text_encoders priamo na serveri
+		'comfyui' => array(
+			''                  => o3dai_t( 'mdl_comfy_auto' ), // auto: gemma4_e4b → gemma4_e2b → qwen_3_ → gemma_3 (prvý nájdený)
 		),
 	);
 }
@@ -552,30 +534,29 @@ function o3dai_models() {
 function o3dai_prices() {
 	return array(
 		'text' => array( // [input, output] za 1M tokenov
-			'claude-sonnet-4-6' => array( 3.0, 15.0 ),
-			'claude-haiku-4-5'  => array( 1.0, 5.0 ),
-			'claude-opus-4-8'   => array( 5.0, 25.0 ),
-			'gpt-4o'            => array( 2.5, 10.0 ),
-			'gpt-4o-mini'       => array( 0.15, 0.6 ),
-			'gpt-4.1'           => array( 2.0, 8.0 ),
-			'gemini-flash-latest' => array( 1.5, 7.5 ),
-			'gemini-3.7-flash'  => array( 1.5, 7.5 ),
-			'gemini-3.6-flash'  => array( 1.5, 7.5 ),
+			'claude-sonnet-5'         => array( 3.0, 15.0 ),
+			'claude-fable-5-1'        => array( 10.0, 50.0 ),
+			'claude-opus-5'           => array( 5.0, 25.0 ),
+			'gpt-6-astra'             => array( 10.0, 50.0 ),
+			'gpt-5.6-sol'             => array( 4.0, 20.0 ),
+			'gpt-5.6-terra'           => array( 2.0, 12.0 ),
+			'gpt-5.6-luna'            => array( 0.2, 1.2 ),
+			'gemini-flash-latest'     => array( 1.5, 7.5 ),
+			'gemini-3.8-flash'        => array( 1.5, 7.5 ),
 			'gemini-flash-lite-latest' => array( 0.3, 2.5 ),
 			'openrouter/auto'                   => array( 3.0, 15.0 ),
-			'anthropic/claude-sonnet-4.5'       => array( 3.0, 15.0 ),
+			'anthropic/claude-sonnet-5'         => array( 3.0, 15.0 ),
 			'anthropic/claude-haiku-4.5'        => array( 1.0, 5.0 ),
-			'openai/gpt-5'                      => array( 1.25, 10.0 ),
-			'openai/gpt-4o'                     => array( 2.5, 10.0 ),
+			'openai/gpt-6-astra'                => array( 10.0, 50.0 ),
 			'google/gemini-2.5-flash'           => array( 0.3, 2.5 ),
 			'meta-llama/llama-3.3-70b-instruct' => array( 0.3, 1.2 ),
 			'deepseek/deepseek-chat'            => array( 0.3, 1.2 ),
 			'_default'          => array( 3.0, 15.0 ),
 		),
-		'image' => array( // $ za obrázok
-			'gpt-image-1'                    => 0.04,
-			'gpt-image-1-mini'               => 0.005,
-			'gemini-2.5-flash-image'         => 0.039,
+		'image' => array( // $ za obrázok (odhady, v1.6.11 – aktuálna generácia)
+			'gpt-image-2.5-sunburst'         => 0.06,
+			'gpt-image-2.5-flare'            => 0.015,
+			'gemini-3-pro-image'             => 0.04,
 			'gemini-3.1-flash-image-preview' => 0.045,
 			'_default'                       => 0.04,
 		),
@@ -604,9 +585,11 @@ function o3dai_track_kind( $kind ) {
 	update_option( o3dai_usage_key(), $u, false );
 }
 
-function o3dai_track_image( $model ) {
-	$p    = o3dai_prices();
-	$cost = $p['image'][ $model ] ?? $p['image']['_default'];
+function o3dai_track_image( $model, $cost = null ) {
+	if ( null === $cost ) { // v1.9.0 – lokálne obrázky bežia s explicitnou cenou 0
+		$p    = o3dai_prices();
+		$cost = $p['image'][ $model ] ?? $p['image']['_default'];
+	}
 	$u = get_option( o3dai_usage_key(), array() );
 	$u['images']     = ( $u['images'] ?? 0 ) + 1;
 	$u['image_cost'] = ( $u['image_cost'] ?? 0 ) + $cost;
