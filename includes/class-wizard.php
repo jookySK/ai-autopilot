@@ -49,7 +49,7 @@ class O3DAI_Wizard {
 		}
 
 		$s = o3dai_get_settings();
-		foreach ( array( 'brand_name', 'brand_desc', 'brand_lang', 'brand_lang_code', 'cta_text', 'image_subject_hint', 'model', 'api_key_claude', 'api_key_openai', 'api_key_gemini', 'api_key_openrouter' ) as $key ) {
+		foreach ( array( 'brand_name', 'brand_desc', 'brand_lang', 'brand_lang_code', 'cta_text', 'image_subject_hint', 'model', 'api_key_claude', 'api_key_openai', 'api_key_gemini', 'api_key_openrouter', 'text_local_url', 'text_local_model', 'text_comfy_url', 'text_comfy_model' ) as $key ) {
 			if ( isset( $_POST[ $key ] ) ) {
 				$s[ $key ] = sanitize_text_field( wp_unslash( $_POST[ $key ] ) );
 			}
@@ -73,9 +73,8 @@ class O3DAI_Wizard {
 			'brand_lang'      => 'English',
 			'brand_lang_code' => 'en',
 			'cta_text'        => o3dai_t( 'w_ph_cta_val' ),
-			'model'           => 'claude-sonnet-4-6',
+			'model'           => 'claude-sonnet-5', // v1.6.11 – aktuálna generácia
 			'provider'        => 'claude',
-			'image_style'     => 'soft watercolor illustration, warm pastel palette, soft light, no text, no watermark',
 			'image_subject_hint' => 'friendly characters',
 			'instructions'    => 'Write in a clear, friendly tone. 600–900 words, H2 subheadings, practical tips, and natural internal links.',
 			'color_primary'   => '#3858e9',
@@ -122,10 +121,11 @@ class O3DAI_Wizard {
 					'provId'      => 'o3dw-provider',
 					'modelId'     => 'o3dw-model',
 					'models'      => o3dai_models(),
-					'current'     => ( $fresh ? 'claude-sonnet-4-6' : (string) $s['model'] ),
+					'current'     => ( $fresh ? 'claude-sonnet-5' : (string) $s['model'] ), // v1.6.11
 					'customLabel' => '',
 				)
-			)
+			),
+			'before' // v1.6.10 – config pred spustením model-select.js (default "after" = po spustení IIFE → wizard dropdown bol prázdny)
 		);
 	}
 
@@ -204,6 +204,8 @@ class O3DAI_Wizard {
 								<option value="openai" <?php selected( $s['provider'], 'openai' ); ?>>OpenAI</option>
 								<option value="gemini" <?php selected( $s['provider'], 'gemini' ); ?>>Google Gemini</option>
 								<option value="openrouter" <?php selected( $s['provider'], 'openrouter' ); ?>>OpenRouter (200+ modelov, 1 kľúč)</option>
+							<option value="local" <?php selected( $s['provider'], 'local' ); ?>><?php echo esc_html( o3dai_t( 'prov_local' ) ); ?></option>
+							<option value="comfyui" <?php selected( $s['provider'], 'comfyui' ); ?>><?php echo esc_html( o3dai_t( 'prov_comfy' ) ); ?></option>
 							</select>
 						</div>
 						<div class="o3dw-field">
@@ -211,6 +213,41 @@ class O3DAI_Wizard {
 							<select name="model" id="o3dw-model"></select>
 						</div>
 					</div>
+			<div class="o3dw-row" id="o3dw-local-fields"<?php echo 'local' === $s['provider'] ? '' : ' style="display:none"'; ?>>
+				<div class="o3dw-field">
+					<label><?php echo esc_html( o3dai_t( 'text_local_url_l' ) ); ?></label>
+					<input type="text" name="text_local_url" value="<?php echo esc_attr( $s['text_local_url'] ?? '' ); ?>" placeholder="http://192.168.0.10:11434">
+				</div>
+				<div class="o3dw-field">
+					<label><?php echo esc_html( o3dai_t( 'text_local_model_l' ) ); ?></label>
+					<input type="text" name="text_local_model" value="<?php echo esc_attr( $s['text_local_model'] ?? '' ); ?>" placeholder="qwen3:14b">
+				</div>
+			</div>
+			<div class="o3dw-row" id="o3dw-comfy-fields"<?php echo 'comfyui' === $s['provider'] ? '' : ' style="display:none"'; ?>>
+				<div class="o3dw-field">
+					<label><?php echo esc_html( o3dai_t( 'text_comfy_url_l' ) ); ?></label>
+					<input type="text" name="text_comfy_url" value="<?php echo esc_attr( $s['text_comfy_url'] ?? '' ); ?>" placeholder="http://192.168.0.10:8188">
+				</div>
+				<div class="o3dw-field">
+					<label><?php echo esc_html( o3dai_t( 'text_comfy_model_l' ) ); ?></label>
+					<input type="text" name="text_comfy_model" value="<?php echo esc_attr( $s['text_comfy_model'] ?? '' ); ?>" placeholder="gemma4_e4b_it_fp8_scaled.safetensors">
+				</div>
+			</div>
+			<script>
+			(function () {
+				var prov = document.getElementById( 'o3dw-provider' );
+				var boxL = document.getElementById( 'o3dw-local-fields' );
+				var boxC = document.getElementById( 'o3dw-comfy-fields' );
+				if ( ! prov || ! boxL ) { return; }
+				function toggle() {
+					boxL.style.display = ( 'local' === prov.value ) ? '' : 'none';
+					if ( boxC ) { boxC.style.display = ( 'comfyui' === prov.value ) ? '' : 'none'; }
+				}
+				// v1.9.x – počiatočný stav + zmeny pri prepnutí providera
+				toggle();
+				prov.addEventListener( 'change', toggle );
+			})();
+			</script>
 					<div class="o3dw-field">
 						<label><?php echo esc_html( o3dai_t( 'key_claude' ) ); ?></label>
 						<input type="password" name="api_key_claude" value="<?php echo esc_attr( $v( 'api_key_claude' ) ); ?>">
