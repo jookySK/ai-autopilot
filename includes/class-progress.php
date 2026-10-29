@@ -10,6 +10,7 @@ class O3DAI_Progress {
 
 	public static function init() {
 		add_action( 'wp_ajax_o3dai_progress', array( __CLASS__, 'ajax' ) );
+		add_action( 'wp_ajax_o3dai_running', array( __CLASS__, 'ajax_running' ) ); // v1.9.x – živý stav bežiacej úlohy
 		add_action( 'admin_footer', array( __CLASS__, 'script' ) );
 	}
 
@@ -36,6 +37,37 @@ class O3DAI_Progress {
 	public static function status( $key ) {
 		$jobs = get_option( 'o3dai_jobs', array() );
 		return $jobs[ $key ]['status'] ?? 'unknown';
+	}
+
+	/** v1.9.x – globálny stav „práve beží“ (jedna aktívna úloha; samostatný od o3dai_jobs, pre články/temy a lokálne generovanie). */
+	public static function set_running( $label = '' ) {
+		$label = trim( (string) $label );
+		if ( '' === $label ) {
+			delete_option( 'o3dai_running' );
+			return;
+		}
+		update_option( 'o3dai_running', array( 'label' => $label, 'ts' => time() ), false );
+	}
+
+	public static function running() {
+		$r = get_option( 'o3dai_running', null );
+		if ( ! is_array( $r ) || empty( $r['label'] ) || empty( $r['ts'] ) ) {
+			return array();
+		}
+		if ( time() - intval( $r['ts'] ) > 7200 ) { // zosnulá úloha ostala po starom – ignoruj
+			return array();
+		}
+		return $r;
+	}
+
+	/** AJAX: aktuálny stav pre živý status box (v1.9.x) */
+	public static function ajax_running() {
+		check_ajax_referer( 'o3dai_progress', 'nonce' );
+		$r = self::running();
+		if ( $r ) {
+			wp_send_json_success( array( 'label' => $r['label'], 'elapsed' => time() - intval( $r['ts'] ) ) );
+		}
+		wp_send_json_success( array( 'label' => '' ) );
 	}
 
 	/** AJAX: vráti stav zoznamu úloh */
@@ -98,7 +130,8 @@ class O3DAI_Progress {
 					'nonce' => $nonce,
 					'fg'    => (bool) $fg,
 				)
-			)
+			),
+			'before' // v1.6.10 – config pred spustením progress.js (default "after" = po spustení IIFE → progress bar sa nikdy nezobrazil)
 		);
 		?>
 		<?php
