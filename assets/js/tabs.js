@@ -6,7 +6,7 @@
 	var wrap = document.querySelector('.o3d-wrap');
 	if (!wrap) { return; }
 	wrap.classList.add('o3d-tabs-on');
-	var VALID = ['overview', 'topics', 'products', 'settings', 'debug'];
+	var VALID = ['overview', 'topics', 'products', 'settings', 'test', 'debug']; // v1.9.0 – test
 	var KEEP = (window.O3DAI_TABS && window.O3DAI_TABS.keep) || '';
 	var tabs = Array.prototype.slice.call(wrap.querySelectorAll('.o3d-tab'));
 	var panels = Array.prototype.slice.call(wrap.querySelectorAll('.o3d-tabpanel'));
