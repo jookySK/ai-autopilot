@@ -30,6 +30,19 @@ class O3DAI_Generator {
 		);
 	}
 
+	/** v1.8.0 – riadok s aktuálnym dátumom a sezónou pre AI prompty (osnova + článok) */
+	public static function season_context() {
+		return 'Dátum: ' . date_i18n( 'j.n.Y' ) . ' – ' . self::season_name() . '. Zohľadni aktuálnu sezónu, prípadné sviatky a typické témy roka.';
+	}
+
+	private static function season_name() {
+		$m = intval( date_i18n( 'n' ) );
+		if ( $m >= 3 && $m <= 5 ) { return 'jar'; }
+		if ( $m >= 6 && $m <= 8 ) { return 'leto'; }
+		if ( $m >= 9 && $m <= 11 ) { return 'jesen'; }
+		return 'zima';
+	}
+
 	/** Vygeneruje zásobník tém do fronty */
 	public static function generate_topics( $count = 15 ) {
 		if ( ! O3DAI_License::has_api_key() ) {
@@ -39,7 +52,8 @@ class O3DAI_Generator {
 		$s   = o3dai_get_settings();
 		$ctx = self::site_context();
 
-		$system = "Si SEO stratég pre slovenský web. Odpovedaj VÝHRADNE platným JSON poľom reťazcov, bez markdownu a komentárov.";
+		O3DAI_Progress::set_running( o3dai_t( 'step_topics' ) ); // v1.9.x – generovanie tém môže trvať (lokálny model)
+		$system = "Si SEO stratég pre slovenský web. Odpovedaj VÝHRADNE platným JSON poľom reťazcov — prvý znak odpovedi musí byť [ a posledný ], bez markdownu, komentárov a číslovania."; // v1.9.7 – jasný rámec pre slabé lokálne modely
 		$gsc = class_exists( 'O3DAI_GSC' ) ? O3DAI_GSC::queries_for_prompt() : trim( (string) ( $s['gsc_queries'] ?? '' ) );
 		$user   = "Web: {$ctx['site']}\n"
 			. "Mesiac: " . date_i18n( 'F Y' ) . " (zohľadni sezónu a sviatky na Slovensku)\n"
@@ -49,29 +63,40 @@ class O3DAI_Generator {
 			. "Mix: informačné (čo je / ako na to), nákupné (tipy na darčeky, výbery) a sezónne témy. "
 			. "Vráť JSON pole reťazcov.";
 
-		$raw = O3DAI_Providers::generate( $system, $user, 2000 );
+		$raw = O3DAI_Providers::generate( $system, $user, 6144 ); // v1.9.12 - thinking modely spália ~4000+ tokenov uvažovaním a pri 4096 sa JSON orezalo; 6144 sa zmestí do n_ctx_slot=8192 s rezervou
 		if ( is_wp_error( $raw ) ) {
-			o3dai_log( 'CHYBA (témy): ' . $raw->get_error_message() );
+			o3dai_log( o3dai_t( 'log_err_topics', array( 'err' => $raw->get_error_message() ) ) );
+			O3DAI_Progress::set_running( '' ); // v1.9.x – generovanie tém zlyhalo, stav čistíme
 			return $raw;
 		}
 		$topics = self::parse_json( $raw );
 		if ( ! is_array( $topics ) ) {
-			o3dai_log( 'CHYBA (témy): odpoveď AI sa nepodarilo naparsovať.' );
+			o3dai_log( o3dai_t( 'log_parse_fail_topics' ) );
+			self::log_parse_preview( $raw ); // v1.9.7 – vidno, čo model reálne napísal
+			O3DAI_Progress::set_running( '' ); // v1.9.x – stav čistíme
 			return new WP_Error( 'o3dai', 'Témy sa nepodarilo naparsovať.' );
 		}
 
-		$queue    = get_option( 'o3dai_topics', array() );
-		$existing = wp_list_pluck( $queue, 'title' );
-		$added    = 0;
+		$queue     = get_option( 'o3dai_topics', array() );
+		$existing  = wp_list_pluck( $queue, 'title' );
+		$published = $ctx['titles']; // v1.6.6 – dedup aj voči publikovaným článkom
+		$added     = 0;
 		foreach ( $topics as $t ) {
 			$t = trim( (string) $t );
-			if ( $t && ! in_array( $t, $existing, true ) ) {
-				$queue[] = array( 'title' => $t, 'status' => 'pending', 'post_id' => 0 );
-				$added ++;
+			if ( ! $t || in_array( $t, $existing, true ) ) {
+				continue;
 			}
+			if ( self::is_duplicate_topic( $t, array_merge( $published, $existing ) ) ) {
+				o3dai_log( o3dai_t( 'log_topic_dup', array( 'x' => $t ) ) );
+				continue;
+			}
+			$queue[]    = array( 'title' => $t, 'status' => 'pending', 'post_id' => 0 );
+			$existing[] = $t; // porovnávať aj s témami pridanými v tejto várke
+			$added ++;
 		}
 		update_option( 'o3dai_topics', $queue, false );
-		o3dai_log( "Pridaných {$added} tém do fronty." );
+		o3dai_log( o3dai_t( 'log_topics_added', array( 'n' => $added ) ) );
+		O3DAI_Progress::set_running( '' ); // v1.9.x – témy hotové, stav čistíme
 		return $added;
 	}
 
@@ -89,7 +114,7 @@ class O3DAI_Generator {
 		$s   = o3dai_get_settings();
 		$ctx = self::site_context();
 
-		$system = "Si SEO stratég. Odpovedaj VÝHRADNE platným JSON poľom reťazcov (názvy článkov), bez markdownu.";
+		$system = "Si SEO stratég. Odpovedaj VÝHRADNE platným JSON poľom reťazcov (názvy článkov) — prvý znak odpovedi musí byť [ a posledný ], bez markdownu."; // v1.9.7
 		$user   = "Web: {$ctx['site']}\n"
 			. "Vytvor obsahovú sériu {$count} nadväzujúcich článkov na tému: \"{$theme}\".\n"
 			. "Články majú tvoriť logický celok (od základov po detaily), nemajú sa obsahovo prekrývať a čitateľ nimi má prejsť postupne. "
@@ -97,36 +122,40 @@ class O3DAI_Generator {
 
 		$raw = O3DAI_Providers::generate( $system, $user, 1500 );
 		if ( is_wp_error( $raw ) ) {
-			o3dai_log( 'CHYBA (séria): ' . $raw->get_error_message() );
+			o3dai_log( o3dai_t( 'log_err_series', array( 'err' => $raw->get_error_message() ) ) );
 			return $raw;
 		}
 		$topics = self::parse_json( $raw );
 		if ( ! is_array( $topics ) || ! $topics ) {
-			o3dai_log( 'CHYBA (séria): odpoveď AI sa nepodarilo naparsovať.' );
+			o3dai_log( o3dai_t( 'log_parse_fail_series' ) );
+			self::log_parse_preview( $raw ); // v1.9.7 – vidno, čo model reálne napísal
 			return new WP_Error( 'o3dai', 'Sériu sa nepodarilo naparsovať.' );
 		}
 
-		$queue  = get_option( 'o3dai_topics', array() );
-		$exist  = wp_list_pluck( $queue, 'title' );
-		$label  = sanitize_text_field( $theme );
+		$queue    = get_option( 'o3dai_topics', array() );
+		$exist    = wp_list_pluck( $queue, 'title' );
+		// v1.6.6 – dedup voči publikovaným článkom + fronte PRED touto sériou (diely série medzi sebou nesrovnávame)
+		$dup_base = array_merge( $ctx['titles'], $exist );
+		$label    = sanitize_text_field( $theme );
 		$added  = 0;
 		$part   = 1;
 		foreach ( $topics as $t ) {
 			$t = trim( (string) $t );
-			if ( $t && ! in_array( $t, $exist, true ) ) {
-				$queue[] = array(
-					'title'       => $t,
-					'status'      => 'pending',
-					'post_id'     => 0,
-					'series'      => $label,
-					'series_part' => $part,
-				);
-				$added ++;
-				$part ++;
+			if ( ! $t || in_array( $t, $exist, true ) || self::is_duplicate_topic( $t, $dup_base ) ) {
+				continue;
 			}
+			$queue[] = array(
+				'title'       => $t,
+				'status'      => 'pending',
+				'post_id'     => 0,
+				'series'      => $label,
+				'series_part' => $part,
+			);
+			$added ++;
+			$part ++;
 		}
 		update_option( 'o3dai_topics', $queue, false );
-		o3dai_log( 'Pridaná séria „' . $label . '" – ' . $added . ' dielov.' );
+		o3dai_log( o3dai_t( 'log_series_added', array( 'x' => $label, 'n' => $added ) ) );
 		return $added;
 	}
 
@@ -136,7 +165,7 @@ class O3DAI_Generator {
 		$s = o3dai_get_settings();
 		$keywords = trim( (string) ( $s['news_keywords'] ?? '' ) );
 		if ( '' === $keywords ) {
-			o3dai_log( 'News: chýbajú kľúčové slová v nastavení.' );
+			o3dai_log( o3dai_t( 'log_news_nokw' ) );
 			return new WP_Error( 'o3dai', o3dai_t( 'news_no_keywords' ) );
 		}
 		$count = max( 3, min( 15, intval( $s['news_count'] ?? 8 ) ) );
@@ -145,7 +174,7 @@ class O3DAI_Generator {
 		//    (jedna veľká fráza s viacerými slovami Google News nenajde, overené)
 		$parts = array_values( array_filter( array_map( 'trim', explode( ',', $keywords ) ) ) );
 		$parts = array_slice( $parts, 0, 5 );
-		o3dai_log( 'News: stahujem aktuálne témy z Google News („' . $keywords . '“)…' );
+		o3dai_log( o3dai_t( 'log_news_fetch', array( 'x' => $keywords ) ) );
 		$headlines   = array();
 		$seen        = array();
 		$requests_ok = 0;
@@ -153,12 +182,12 @@ class O3DAI_Generator {
 			$url  = 'https://news.google.com/rss/search?q=' . rawurlencode( $kw ) . '&hl=sk&gl=SK&ceid=sk:sk';
 			$resp = wp_remote_get( $url, array( 'timeout' => 30, 'user-agent' => 'Mozilla/5.0 (compatible; O3DAI/1.4)' ) );
 			if ( is_wp_error( $resp ) ) {
-				o3dai_log( 'News CHYBA („' . $kw . '“): ' . $resp->get_error_message() );
+				o3dai_log( o3dai_t( 'log_news_err_kw', array( 'kw' => $kw, 'err' => $resp->get_error_message() ) ) );
 				continue;
 			}
 			$code = wp_remote_retrieve_response_code( $resp );
 			if ( 200 !== $code ) {
-				o3dai_log( 'News CHYBA („' . $kw . '“): HTTP ' . $code );
+				o3dai_log( o3dai_t( 'log_news_http', array( 'kw' => $kw, 'code' => $code ) ) );
 				continue;
 			}
 			$requests_ok++;
@@ -177,14 +206,14 @@ class O3DAI_Generator {
 			}
 		}
 		if ( 0 === $requests_ok ) {
-			o3dai_log( 'News CHYBA: žiadny dotaz na Google News neprešiel (sieť / blokácia).' );
+			o3dai_log( o3dai_t( 'log_news_allfail' ) );
 			return new WP_Error( 'o3dai', o3dai_t( 'news_empty' ) );
 		}
 		if ( empty( $headlines ) ) {
-			o3dai_log( 'News: žiadne výsledky pre „' . $keywords . '“.' );
+			o3dai_log( o3dai_t( 'log_news_noresults', array( 'x' => $keywords ) ) );
 			return new WP_Error( 'o3dai', o3dai_t( 'news_empty' ) );
 		}
-		o3dai_log( 'News: nájdených ' . count( $headlines ) . ' aktuálnych nadpisov.' );
+		o3dai_log( o3dai_t( 'log_news_found', array( 'n' => count( $headlines ) ) ) );
 
 		// 3) Prepísanie na témy webu cez AI (ak je kľúč a zapnuté)
 		$topics = array();
@@ -192,8 +221,8 @@ class O3DAI_Generator {
 			$ctx     = self::site_context();
 			$context = trim( (string) ( $s['news_context'] ?? '' ) );
 			$site    = ( '' !== $context ) ? $context : $ctx['site'];
-			o3dai_log( 'News: kontext pre AI: „' . $site . '“' );
-			o3dai_log( 'News: nadpisy pre AI: ' . implode( ' | ', array_slice( $headlines, 0, 5 ) ) );
+			o3dai_log( o3dai_t( 'log_news_ctx', array( 'x' => $site ) ) );
+			o3dai_log( o3dai_t( 'log_news_headlines', array( 'x' => implode( ' | ', array_slice( $headlines, 0, 5 ) ) ) ) );
 			$system  = 'Si SEO stratég. Navrhni VŠEOBECNÉ témy blogových článkov, inšpirované aktuálnymi spravodajskými nadpismi a prispôsobené tematickému zameraniu webu. ZAKÁZANÉ v názvoch článkov: akékoľvek názvy konkrétnych firiem, značiek, produktov, služieb alebo technológií — aj keď sa vyskytli v nadpisoch (napr. pri výpadku služby píš „cloudová služba“, nie názov poskytovateľa). Názov webu v názvoch článkov nepoužívaj. Odpovedaj VÝHRADNE platným JSON poľom reťazcov (názvy článkov), bez markdownu.';
 			$user    = 'Web: ' . $site . "\n"
 				. "Navrhni {$count} tém článkov inšpirovaných týmito aktuálnymi spravodajskými nadpisami (slovenčina):\n- "
@@ -210,16 +239,16 @@ class O3DAI_Generator {
 						if ( ! $t ) { continue; }
 						if ( '' !== $site_strip && false !== stripos( $t, $site_strip ) ) {
 							$t = trim( preg_replace( '/\s+/', ' ', str_ireplace( $site_strip, '', $t ) ) );
-							o3dai_log( 'News: z témy odstránený názov webu: „' . $t . '“' );
+							o3dai_log( o3dai_t( 'log_news_stripped', array( 'x' => $t ) ) );
 						}
 						if ( $t ) { $topics[] = $t; }
 					}
 				}
 			}
 			if ( empty( $topics ) ) {
-				o3dai_log( 'News: AI prepis zlyhal – použijem nadpisy priamo.' );
+				o3dai_log( o3dai_t( 'log_news_ai_fail' ) );
 			} else {
-				o3dai_log( 'News: AI prepísala ' . count( $topics ) . ' tém.' );
+				o3dai_log( o3dai_t( 'log_news_ai_done', array( 'n' => count( $topics ) ) ) );
 			}
 		}
 
@@ -228,18 +257,21 @@ class O3DAI_Generator {
 			$topics = array_slice( $headlines, 0, $count );
 		}
 
-		// 5) Pridanie do fronty (bez duplicit)
-		$queue = get_option( 'o3dai_topics', array() );
-		$exist = wp_list_pluck( $queue, 'title' );
-		$added = 0;
+		// 5) Pridanie do fronty (bez duplicit; v1.6.6 – aj fuzzy dedup voči publikovaným článkom)
+		$queue     = get_option( 'o3dai_topics', array() );
+		$exist     = wp_list_pluck( $queue, 'title' );
+		$news_ctx  = self::site_context(); // v1.6.6 – dedup voči publikovaným článkom + fronte
+		$dup_base  = array_merge( $news_ctx['titles'], $exist );
+		$added     = 0;
 		foreach ( $topics as $t ) {
-			if ( $t && ! in_array( $t, $exist, true ) ) {
-				$queue[] = array( 'title' => $t, 'status' => 'pending', 'post_id' => 0, 'source' => 'news' );
-				$added++;
+			if ( ! $t || in_array( $t, $exist, true ) || self::is_duplicate_topic( $t, $dup_base ) ) {
+				continue;
 			}
+			$queue[] = array( 'title' => $t, 'status' => 'pending', 'post_id' => 0, 'source' => 'news' );
+			$added++;
 		}
 		update_option( 'o3dai_topics', array_values( $queue ), false );
-		o3dai_log( 'News: pridaných ' . $added . ' tém do fronty.' );
+		o3dai_log( o3dai_t( 'log_news_added', array( 'n' => $added ) ) );
 		return $added;
 	}
 
@@ -254,7 +286,7 @@ class O3DAI_Generator {
 			// phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- long-running generation job; harmless no-op when the host disables it
 			set_time_limit( 300 );
 		}
-		o3dai_log( 'Štart generovania…' );
+		o3dai_log( o3dai_t( 'log_start' ) );
 		$queue = get_option( 'o3dai_topics', array() );
 
 		$idx = null;
@@ -268,7 +300,8 @@ class O3DAI_Generator {
 		if ( null === $idx ) {
 			$res = self::generate_topics();
 			if ( is_wp_error( $res ) ) {
-				o3dai_log( 'CHYBA (témy): ' . $res->get_error_message() );
+				o3dai_log( o3dai_t( 'log_err_topics', array( 'err' => $res->get_error_message() ) ) );
+				self::send_failure_email( 'fail_topics_label', $res );
 				return $res;
 			}
 			$queue = get_option( 'o3dai_topics', array() );
@@ -285,14 +318,15 @@ class O3DAI_Generator {
 
 		$result = self::write_article( $queue[ $idx ]['title'] );
 		if ( is_wp_error( $result ) ) {
-			o3dai_log( 'CHYBA (článok): ' . $result->get_error_message() );
+			o3dai_log( o3dai_t( 'log_err_article', array( 'err' => $result->get_error_message() ) ) );
+			self::send_failure_email( 'fail_article_label', $result, $queue[ $idx ]['title'] );
 			return $result;
 		}
 
 		$queue[ $idx ]['status']  = 'done';
 		$queue[ $idx ]['post_id'] = $result;
 		update_option( 'o3dai_topics', $queue, false );
-		o3dai_log( 'Vytvorený článok #' . $result . ': ' . get_the_title( $result ) );
+		o3dai_log( o3dai_t( 'log_article_created', array( 'id' => $result, 'title' => get_the_title( $result ) ) ) );
 		return $result;
 	}
 
@@ -307,32 +341,75 @@ class O3DAI_Generator {
 
 		$user = 'Téma článku: ' . $topic . "\n\n"
 			. ( $series_note ? $series_note . "\n\n" : '' )
+			. self::season_context() . "\n"
 			. 'Web: ' . $ctx['site'] . "\n"
 			. 'Jazyk: ' . $s['brand_lang'] . '.' . "\n\n"
 			. 'Už napísané články (neopakuj ich obsah, nadviaž inak):' . "\n- " . implode( "\n- ", array_slice( $ctx['titles'], 0, 60 ) ) . "\n\n"
 			. 'Navrhni osnovu, ktorá čitateľa prevedie témou od úvodu po praktický záver. '
 			. 'Sekcie nech nie sú generické – nech zodpovedajú konkrétne na to, čo hľadá človek, ktorý si tému vygooglil.';
 
-		$raw = O3DAI_Providers::generate( $system, $user, 1200 );
+		$raw = O3DAI_Providers::generate( $system, $user, 4096 ); // v1.9.13 – thinking modelu treba priestor na uvažovanie + osnovu (s /no_think to bude len osnova)
 		if ( is_wp_error( $raw ) ) {
 			return '';
 		}
 		$raw = trim( (string) $raw );
 		update_option( 'o3dai_last_outline', mb_substr( $raw, 0, 3000 ), false );
-		return $raw;
+		// v1.9.13 – thinking modely niekedy zamiešajú vlastné uvažovanie do osnovy; ponechaj len riadky "H2: …" (ak žiadne → článok bez osnovy)
+		preg_match_all( '/^H2:[^\n]+$/m', $raw, $hm );
+		if ( empty( $hm[0] ) ) {
+			return '';
+		}
+		$clean = implode( "\n", $hm[0] );
+		if ( $clean !== $raw ) {
+			o3dai_log( o3dai_t( 'log_outline_h2_filtered' ) ); // v1.9.13 – uvažovanie modelu odstránené zo osnovy
+		}
+		return $clean;
 	}
+
+	/** v1.9.x – fair-use upozornenie do logu max. 1x za kalendárny mesiac (aby sa nezakrývali užitočné záznamy). */
+	private static function adv_log( $type, $msg ) {
+		$last  = get_option( 'o3dai_adv_logged', array() );
+		if ( ! is_array( $last ) ) { $last = array(); }
+		$month = gmdate( 'Y-m' );
+		if ( isset( $last[ $type ] ) && $last[ $type ] === $month ) {
+			return;
+		}
+		$last[ $type ] = $month;
+		update_option( 'o3dai_adv_logged', $last, false );
+		o3dai_log( $msg );
+	}
+
 
 	/** Vygeneruje článok na tému a uloží ho */
 	public static function write_article( $topic, $retry = false ) {
 		$s   = o3dai_get_settings();
 
+		O3DAI_Progress::set_running( o3dai_t( 'step_article_start', array( 't' => $topic ) ) ); // v1.9.x – živý stav na stránke pluginu
 		// Fair-use Free verzie (v1.5.11): nad limitom len upozornenie do logu — generovanie pokračuje
 		if ( ! O3DAI_License::can_make_article() ) {
-			o3dai_log( o3dai_t( 'free_articles_over', array( 'limit' => O3DAI_License::FREE_ARTICLES ) ) );
+			self::adv_log( 'articles', o3dai_t( 'free_articles_over', array( 'limit' => O3DAI_License::FREE_ARTICLES ) ) ); // v1.9.x – do logu max 1x za mesiac
 			update_option( 'o3dai_limit_hit', 'articles', false );
 		}
 
 		$ctx = self::site_context();
+
+		// v1.6.6 – produktové odkazy len pri reálnej relevance; bez relevantného produktu CTA vedie na kontakt/úvodnú
+		$use_products = ! empty( $s['product_links'] );
+		$prod_list    = $use_products ? self::filter_relevant_products( $topic, $ctx['products'] ) : array();
+		$has_products = ( ! empty( $prod_list ) );
+		$cta_href     = $has_products ? 'PRESNÁ_URL' : self::cta_fallback_url();
+
+		if ( $has_products ) {
+			$cta_rule   = ' - jeden odporúčací blok na produkt ako <div class="o3d-cta"><p>krátky text</p><a class="o3d-cta-btn" href="' . $cta_href . '">' . $s['cta_text'] . '</a></div>,' . "\n";
+			$links_rule = ' - POVINNÉ: 2-3 interné odkazy <a href="URL">text</a> na produkty zo zoznamu PRODUKTY (presné URL) a 1 odkaz na článok zo zoznamu ČLÁNKY.' . "\n"
+				. ' Bez interných odkazov je článok neplatný.)' . "\n";
+			$prod_block = '=== PRODUKTY (odkáž na 2-3 relevantné, použi PRESNÉ URL za znakom |) ===' . "\n" . implode( "\n", $prod_list ) . "\n\n";
+		} else {
+			$cta_rule   = ' - jeden odporúčací blok (CTA) ako <div class="o3d-cta"><p>krátky text</p><a class="o3d-cta-btn" href="' . $cta_href . '">' . $s['cta_text'] . '</a></div>,' . "\n";
+			$links_rule = ' - POVINNÉ: 1 interný odkaz <a href="URL">text</a> na článok zo zoznamu ČLÁNKY. Produktové odkazy vynechaj – žiadny relevantný produkt.' . "\n"
+				. ' Bez tohto interného odkazu je článok neplatný.)' . "\n";
+			$prod_block = '';
+		}
 
 		// sériový kontext (ak téma patrí do série)
 		$series_note = '';
@@ -347,9 +424,10 @@ class O3DAI_Generator {
 		// Krok 1: osnova (ak je zapnutá)
 		$outline = '';
 		if ( ! empty( $s['use_outline'] ) ) {
+			O3DAI_Progress::set_running( o3dai_t( 'step_outline', array( 't' => $topic ) ) ); // v1.9.x – živý stav
 			$outline = self::make_outline( $topic, $ctx, $series_note );
 			if ( $outline ) {
-				o3dai_log( 'Osnova pripravená pre: ' . $topic );
+				o3dai_log( o3dai_t( 'log_outline_done', array( 'x' => $topic ) ) );
 			}
 		}
 
@@ -364,49 +442,56 @@ class O3DAI_Generator {
 			. "===IMAGE_SUBJECT===\n(in ENGLISH: 1 short phrase, 1-2 concrete " . ( $s['image_subject_hint'] ?? 'characters' ) . " that fit this article, with colors)\n"
 			. "===CONTENT===\n"
 			. "(HTML článku. Pravidlá formátovania pre pekný vzhľad:\n"
-			. " - úvodný odsek zabaľ do <p class=\"o3d-lead\">…</p> (výraznejší úvod),\n"
+			. " - úvodný odsek zabaľ do <p class=\"o3d-lead\">[tvoj úvod]</p> (výraznejší úvod),\n"
 			. " - sekcie členi cez <h2>, text v <p>, zoznamy <ul><li>,\n"
-			. " - aspoň jeden zvýraznený tip vlož ako <div class=\"o3d-tip\"><strong>Tip:</strong> …</div>,\n"
-			. " - jeden odporúčací blok na produkt ako <div class=\"o3d-cta\"><p>krátky text</p><a class=\"o3d-cta-btn\" href=\"PRESNÁ_URL\">" . $s['cta_text'] . "</a></div>,\n"
-			. " - POVINNÉ: 2-3 interné odkazy <a href=\"URL\">text</a> na produkty zo zoznamu PRODUKTY (presné URL) a 1 odkaz na článok zo zoznamu ČLÁNKY.\n"
-			. " Bez interných odkazov je článok neplatný.)\n"
+			. " - aspoň jeden zvýraznený tip vlož ako <div class=\"o3d-tip\"><strong>Tip:</strong> [tvoj tip]</div>,\n"
+			// v1.9.14 – slabšie modely (Gemma 4 a pod.) kopírovali ukážky doslova (body končiace „…“); explicitný zákaz výplne
+			. " - každú vetu aj bod zoznamu dopiš do konca: NEPÍŠ „…“ ako výplň a nenakopíruj text z ukážok vyššie,\n"
+			. $cta_rule
+			. $links_rule
 			. "===END===";
 
 		$user = "Téma článku: {$topic}\n\n"
 			. ( $series_note ? $series_note . "\n\n" : '' )
+			. self::season_context() . "\n\n"
 			. ( $outline ? "=== OSNOVA (drž sa jej, každý riadok = jedna <h2> sekcia v tomto poradí) ===\n" . $outline . "\n\n" : '' )
 			. "Web: {$ctx['site']}\n\n"
-			. "=== PRODUKTY (odkáž na 2-3 relevantné, použi PRESNÉ URL za znakom |) ===\n" . implode( "\n", array_slice( $ctx['products'], 0, 25 ) ) . "\n\n"
+			. $prod_block
 			. "=== ČLÁNKY (odkáž na 1, použi URL za znakom |) ===\n" . implode( "\n", $ctx['posts'] ) . "\n\n"
 			. "Napíš článok podľa inštrukcií, dodrž formát s oddeľovačmi a NEZABUDNI na interné odkazy s presnými URL.";
 
-		$raw = O3DAI_Providers::generate( $system, $user, 8000 );
+		O3DAI_Progress::set_running( o3dai_t( 'step_article_text', array( 't' => $topic ) ) ); // v1.9.x – živý stav
+		$o3d_txt0 = microtime( true ); // v1.9.x – meranie času generovania textu (lokálne modely trvajú minúty)
+		$raw = O3DAI_Providers::generate( $system, $user, 11000 ); // v1.9.13 – navyše pokryje prípad, keď thinking model najprv „uvažuje“ a až potom píše článok (oddeľovače sa naparšujú aj pri orezanom výstope)
 		if ( is_wp_error( $raw ) ) {
+			O3DAI_Progress::set_running( '' ); // v1.9.x – text zlyhal, stav čistíme
 			return $raw;
 		}
 		update_option( 'o3dai_last_raw', mb_substr( (string) $raw, 0, 6000 ), false );
+		o3dai_log( o3dai_t( 'log_text_done', array( 's' => intval( round( microtime( true ) - $o3d_txt0 ) ) ) )); // v1.9.x – ako dlho trval text
 
 		$a = self::parse_markers( $raw );
 		if ( empty( $a['TITLE'] ) || empty( $a['CONTENT'] ) ) {
+			// v1.9.13 – žiadne oddeľovače vôbec (thinking model minul tokeny uvažovaním) → jeden čerstvý pokus
+			if ( ! $retry ) {
+				o3dai_log( o3dai_t( 'log_article_parse_retry' ) );
+				O3DAI_Progress::set_running( o3dai_t( 'step_article_text', array( 't' => $topic ) ) ); // v1.9.13 – živý stav počas opakovania
+				return self::write_article( $topic, true );
+			}
+			O3DAI_Progress::set_running( '' ); // v1.9.x – stav čistíme
 			return new WP_Error( 'o3dai', 'Odpoveď AI sa nepodarilo naparsovať na článok (pozri Debug na stránke pluginu).' );
 		}
 
 		if ( ! empty( $s['proofread'] ) ) {
 			$a['CONTENT'] = O3DAI_Providers::proofread( $a['CONTENT'] );
-			o3dai_log( 'Korektúra článku hotová: ' . $topic );
+			o3dai_log( o3dai_t( 'log_proofread_done', array( 'x' => $topic ) ) );
 		}
 
 		$mode      = $s['publish_status'];
 		$is_appr   = ( 'approval' === $mode );
 		$db_status = $is_appr ? 'pending' : ( in_array( $mode, array( 'publish', 'draft' ), true ) ? $mode : 'draft' );
 
-		// Free PLÁN v PRO zipi: vždy koncept — automatické zverejňovanie je Pro funkcia.
-		// FREE build (wp.org) má live publishing plne dostupný, takže ho netreba nútiť (v1.6.0).
-		if ( ! O3DAI_License::is_pro() && ! O3DAI_License::is_free_build() && 'draft' !== $db_status ) {
-			$db_status = 'draft';
-			$is_appr   = false;
-			o3dai_log( o3dai_t( 'free_publish_forced_draft' ) );
-		}
+		// v1.7.0 – všetko je free: live publishing aj schvaľovanie e-mailom fungujú pre každého, nútenie na koncept už neplatí.
 
 		$postarr = array(
 			'post_type'    => 'post',
@@ -423,16 +508,17 @@ class O3DAI_Generator {
 		$issues    = self::quality_check( $a );
 		$has_error = in_array( 'no_content', $issues, true ) || in_array( 'too_short', $issues, true );
 		if ( $has_error && empty( $retry ) ) {
-			o3dai_log( 'Kvalita nízka (' . implode( ', ', $issues ) . ') – skúšam ešte raz…' );
+			o3dai_log( o3dai_t( 'log_quality_retry', array( 'issues' => implode( ', ', $issues ) ) ) );
 			return self::write_article( $topic, true ); // jeden opakovaný pokus
 		}
 		if ( $issues ) {
 			$postarr['post_status'] = 'draft'; // pri probléme radšej koncept na kontrolu
-			o3dai_log( 'Upozornenie na kvalitu: ' . implode( ', ', $issues ) . ' → uložené ako koncept.' );
+			o3dai_log( o3dai_t( 'log_quality_saved', array( 'issues' => implode( ', ', $issues ) ) ) );
 		}
 
 		$post_id = wp_insert_post( $postarr, true );
 		if ( is_wp_error( $post_id ) ) {
+			O3DAI_Progress::set_running( '' ); // v1.9.x – stav čistíme
 			return $post_id;
 		}
 
@@ -441,6 +527,7 @@ class O3DAI_Generator {
 
 		$subject = $a['IMAGE_SUBJECT'] ?? '';
 		if ( ! empty( $subject ) ) { update_post_meta( $post_id, '_o3dai_subject', sanitize_text_field( $subject ) ); }
+		O3DAI_Progress::set_running( o3dai_t( 'step_article_image', array( 't' => $topic ) ) ); // v1.9.x – obrázky (lokálne) tiež trvajú
 		self::set_featured( $post_id, $a['TITLE'], $s, $subject );
 
 		// obrázky do tela článku
@@ -468,6 +555,7 @@ class O3DAI_Generator {
 			self::send_webhook( $post_id );
 		}
 
+		O3DAI_Progress::set_running( '' ); // v1.9.x – generovanie hotové, stav čistíme
 		return $post_id;
 	}
 
@@ -529,7 +617,7 @@ class O3DAI_Generator {
 				'urlList'     => array( $url ),
 			) ),
 		) );
-		o3dai_log( 'Ping vyhľadávačom pre #' . $post_id );
+		o3dai_log( o3dai_t( 'log_ping_sent', array( 'id' => $post_id ) ) );
 	}
 
 	/** Pošle webhook s dátami PRODUKTU (odkaz vedie na vlastný web zákazníka) */
@@ -850,7 +938,7 @@ class O3DAI_Generator {
 			'headers'  => array( 'content-type' => 'application/json' ),
 			'body'     => wp_json_encode( $payload ),
 		) );
-		o3dai_log( 'Webhook (soc. siete) odoslaný pre #' . $post_id );
+		o3dai_log( o3dai_t( 'log_webhook_sent', array( 'id' => $post_id ) ) );
 	}
 
 	/** Automatická propagácia produktov (v1.4.13).
@@ -993,38 +1081,53 @@ class O3DAI_Generator {
 			$done ++;
 		}
 		if ( $done ) {
-			o3dai_log( 'Prelinkované staršie články: ' . $done );
+			o3dai_log( o3dai_t( 'log_internal_links', array( 'n' => $done ) ) );
 		}
 
 		// článok → príbuzný produkt: vlož do nového článku odkaz na najrelevantnejší produkt
 		self::link_article_to_product( $new_id, $words );
 	}
 
-	/** Do nového článku vloží box s odkazom na najrelevantnejší produkt */
+	/** Do nového článku vloží box s odkazom na relevantný produkt (v1.6.6 – relevance gate) */
 	public static function link_article_to_product( $post_id, $words ) {
-		if ( ! post_type_exists( 'product' ) || ! $words ) {
+		$o3d_settings = o3dai_get_settings();
+		if ( empty( $o3d_settings['product_links'] ) || ! post_type_exists( 'product' ) ) {
+			return;
+		}
+		$topic_text = implode( ' ', array_filter( array_map( 'trim', (array) $words ) ) );
+		if ( '' === trim( $topic_text ) ) {
 			return;
 		}
 		$prods = get_posts( array(
 			'post_type'    => 'product',
 			'post_status'  => 'publish',
-			'numberposts'  => 1,
-			's'            => implode( ' ', array_slice( $words, 0, 3 ) ),
+			'numberposts'  => 30,
 		) );
 		if ( ! $prods ) {
 			return;
 		}
-		$p = $prods[0];
+		// v1.6.6 – namiesto prvého výsledku textového hľadania: produkt s najvyšším počtom spoločných slov
+		$best       = null;
+		$best_score = 0;
+		foreach ( $prods as $p ) {
+			$score = self::word_overlap( get_the_title( $p->ID ), $topic_text );
+			if ( $score > $best_score ) {
+				$best_score = $score;
+				$best       = $p;
+			}
+		}
+		if ( ! $best || $best_score < 1 ) {
+			return; // žiadny produkt so spoločným slovom s článkom → box vynechať
+		}
 		$post = get_post( $post_id );
 		// ak už na produkt odkazuje priamo v texte, nepridávaj box
-		if ( $post && false !== strpos( $post->post_content, get_permalink( $p->ID ) ) ) {
+		if ( $post && false !== strpos( $post->post_content, get_permalink( $best->ID ) ) ) {
 			return;
 		}
-		$img = get_the_post_thumbnail( $p->ID, 'thumbnail' );
 		$box = "\n<div class=\"o3d-related o3d-product-cta\"><strong>Z našej ponuky:</strong> "
-			. '<a href="' . esc_url( get_permalink( $p->ID ) ) . '">' . esc_html( get_the_title( $p->ID ) ) . '</a></div>' . "\n";
+			. '<a href="' . esc_url( get_permalink( $best->ID ) ) . '">' . esc_html( get_the_title( $best->ID ) ) . '</a></div>' . "\n";
 		wp_update_post( array( 'ID' => $post_id, 'post_content' => $post->post_content . $box ) );
-		o3dai_log( 'Do článku #' . $post_id . ' pridaný odkaz na produkt: ' . get_the_title( $p->ID ) );
+		o3dai_log( o3dai_t( 'log_product_link', array( 'id' => $post_id, 'title' => get_the_title( $best->ID ) ) ) );
 	}
 
 	/** Pošle e-mail so schvaľovacími odkazmi */
@@ -1040,8 +1143,27 @@ class O3DAI_Generator {
 			. "🗑 Zahodiť: " . $del . "\n\n"
 			. "✏️ Najprv upraviť: " . $edit . "\n";
 		wp_mail( get_option( 'admin_email' ), 'AI Autopilot: článok na schválenie – ' . $title, $body );
-		o3dai_log( 'Odoslaný e-mail na schválenie #' . $post_id );
+		o3dai_log( o3dai_t( 'log_approve_email', array( 'id' => $post_id ) ) );
 	}
+	/** v1.8.0 – e-mail adminovi, keď denný beh zlyhá (krok + chyba) */
+	public static function send_failure_email( $label_key, WP_Error $err, $topic = '' ) {
+		if ( ! function_exists( 'wp_mail' ) || ! $err instanceof WP_Error ) {
+			return;
+		}
+		$to = get_option( 'admin_email', '' );
+		if ( ! $to ) {
+			return;
+		}
+		$x       = o3dai_t( $label_key );
+		$subject = o3dai_t( 'mail_fail_subject', array( 'x' => $x ) );
+		$body    = o3dai_t( 'mail_fail_body', array(
+			'x'     => $x,
+			'topic' => ( '' === $topic ? '—' : $topic ),
+			'err'   => $err->get_error_message(),
+		) );
+		wp_mail( $to, $subject, $body );
+	}
+
 
 	/** Spracuje kliknutie z e-mailu (publish / trash) */
 	public static function handle_approval( $post_id, $token, $do ) {
@@ -1052,7 +1174,7 @@ class O3DAI_Generator {
 		delete_post_meta( $post_id, '_o3dai_token' );
 		if ( 'trash' === $do ) {
 			wp_trash_post( $post_id );
-			o3dai_log( 'Článok #' . $post_id . ' zahodený cez e-mail.' );
+			o3dai_log( o3dai_t( 'log_article_trashed', array( 'id' => $post_id ) ) );
 			wp_die( 'Článok bol zahodený (presunutý do koša). Toto okno môžete zavrieť.' );
 		}
 		wp_update_post( array( 'ID' => $post_id, 'post_status' => 'publish' ) );
@@ -1062,7 +1184,7 @@ class O3DAI_Generator {
 		}
 		self::ping_search_engines( $post_id );
 		self::send_webhook( $post_id );
-		o3dai_log( 'Článok #' . $post_id . ' publikovaný cez e-mail.' );
+		o3dai_log( o3dai_t( 'log_article_published_email', array( 'id' => $post_id ) ) );
 		wp_safe_redirect( get_permalink( $post_id ) );
 		exit;
 	}
@@ -1097,7 +1219,7 @@ class O3DAI_Generator {
 		if ( '' === $q ) {
 			return new WP_Error( 'o3dai', 'Fotobanka: nedalo sa zostaviť hľadaný výraz (vyplni „Extra hľadané slová").' );
 		}
-		o3dai_log( 'Fotobanka: hľadám „' . $q . '"…' );
+		o3dai_log( o3dai_t( 'log_stock_search', array( 'x' => $q ) ) );
 		return O3DAI_Stock::fetch( $q, $s );
 	}
 
@@ -1114,6 +1236,82 @@ class O3DAI_Generator {
 			}
 		}
 		return implode( ' ', array_slice( $out, 0, 5 ) );
+	}
+
+	/** Významné slová textu – aspoň 4 znaky, bez stopwords a čistých čísel (v1.6.6) */
+	public static function meaningful_words( $text ) {
+		$stop = array( 'ako', 'pre', 'na', 'z', 'v', 's', 'a', 'do', 'o', 'je', 'čo', 'kedy', 'kde', 'prečo', 'to', 'sa', 'som', 'the', 'and', 'for', 'of', 'to', 'how', 'why', 'what', 'when', 'where', 'with', 'your', 'best', 'top' );
+		$words = preg_split( '/\s+/', mb_strtolower( wp_strip_all_tags( (string) $text ) ) );
+		if ( ! is_array( $words ) ) { return array(); }
+		$out = array();
+		foreach ( $words as $w ) {
+			$w = preg_replace( '/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/u', '', (string) $w );
+			if ( mb_strlen( $w ) >= 4 && ! in_array( $w, $stop, true ) && ! preg_match( '/^\d+$/', $w ) ) {
+				$out[] = $w;
+			}
+		}
+		return array_values( array_unique( $out ) );
+	}
+
+	/** Počet spoločných významných slov dvoch textov (v1.6.6) */
+	private static function word_overlap( $a, $b ) {
+		$wa = self::meaningful_words( $a );
+		if ( ! $wa ) { return 0; }
+		$wb = array_flip( self::meaningful_words( $b ) );
+		if ( ! $wb ) { return 0; }
+		$n = 0;
+		foreach ( $wa as $w ) { if ( isset( $wb[ $w ] ) ) { $n++; } }
+		return $n;
+	}
+
+	/** v1.6.6 – normalizácia názvu témy pre porovnávanie (malé písmená, bez interpunkcie) */
+	private static function normalize_topic_name( $title ) {
+		$t = mb_strtolower( wp_strip_all_tags( trim( (string) $title ) ) );
+		return trim( (string) preg_replace( '/[^\p{L}\d\s]/u', ' ', $t ) );
+	}
+
+	/** v1.6.6 – je nový názov duplicitný voči existujúcim? (predpona min. 20 znakov alebo 2+ spoločné významné slová) */
+	public static function is_duplicate_topic( $title, array $against ) {
+		$nt = self::normalize_topic_name( $title );
+		if ( '' === $nt ) { return false; }
+		foreach ( $against as $other ) {
+			$no = self::normalize_topic_name( $other );
+			if ( '' !== $no && min( mb_strlen( $nt ), mb_strlen( $no ) ) >= 20 && ( 0 === strpos( $no, $nt ) || 0 === strpos( $nt, $no ) ) ) {
+				return true;
+			}
+			if ( self::word_overlap( $title, $other ) >= 2 ) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** v1.6.6 – relevantné produkty pre prompt: názov produktu zdieľa aspoň 1 významné slovo s témou */
+	private static function filter_relevant_products( $topic, array $products ) {
+		$out = array();
+		foreach ( $products as $line ) {
+			$pos  = strpos( (string) $line, '|' );
+			$name = ( false === $pos ) ? (string) $line : substr( (string) $line, 0, $pos );
+			if ( self::word_overlap( $topic, trim( $name ) ) >= 1 ) {
+				$out[] = $line;
+			}
+		}
+		return array_slice( $out, 0, 25 );
+	}
+
+	/** v1.6.6 – URL pre CTA tlačidlo, keď sa neprepája produkt: kontaktná stránka (Kontakt/Kontakty/Contact), inak úvodná */
+	private static function cta_fallback_url() {
+		static $url = null;
+		if ( null !== $url ) { return $url; }
+		$url = home_url( '/' );
+		foreach ( array( 'Kontakt', 'Kontakty', 'Contact' ) as $name ) {
+			$pages = get_posts( array( 'post_type' => 'page', 'post_status' => 'publish', 'title' => $name, 'numberposts' => 1 ) );
+			if ( ! empty( $pages ) ) {
+				$url = get_permalink( $pages[0]->ID );
+				break;
+			}
+		}
+		return $url;
 	}
 
 	/** Zloží prompt a vygeneruje obrázok; vráti binárku alebo WP_Error */
@@ -1134,8 +1332,10 @@ class O3DAI_Generator {
 		$prompt = 'Article topic: "' . $title . '". '
 			. 'Main subject(s): ' . $subject . '. '
 			. 'Composition and scene: ' . $variations[ array_rand( $variations ) ] . '. '
-			. 'Camera: ' . $moods[ array_rand( $moods ) ] . '. '
-			. 'Style: ' . stripslashes( $s['image_style'] );
+			. 'Camera: ' . $moods[ array_rand( $moods ) ] . '.';
+		if ( '' !== trim( (string) $s['image_style'] ) ) {
+			$prompt .= ' Style: ' . stripslashes( $s['image_style'] );
+		}
 		update_option( 'o3dai_last_img_prompt', $prompt, false );
 		return O3DAI_Providers::generate_image( $prompt );
 	}
@@ -1179,7 +1379,7 @@ class O3DAI_Generator {
 			return;
 		}
 		if ( ! function_exists( 'imagecreatefromstring' ) || ! function_exists( 'imagewebp' ) ) {
-			o3dai_log( 'Optimalizácia obrázkov: server nepodporuje GD/WebP – preskočené.' );
+			o3dai_log( o3dai_t( 'log_optim_skipped' ) );
 			return;
 		}
 		$im = @imagecreatefromstring( $bin );
@@ -1218,7 +1418,7 @@ class O3DAI_Generator {
 		if ( $mode !== $raw_mode ) {
 			o3dai_log( o3dai_t( 'free_images_stock_fallback' ) );
 		}
-		$ai_mode    = ( 'ai' === $mode );
+		$ai_mode    = in_array( $mode, array( 'ai', 'local' ), true ); // v1.9.0: lokálny PC sa spracúva ako AI cesta
 		$stock_mode = ( 'stock' === $mode );
 		if ( $stock_mode ) {
 			$stock = self::stock_image( $title, $subject, $s );
@@ -1227,38 +1427,45 @@ class O3DAI_Generator {
 				if ( $att ) {
 					set_post_thumbnail( $post_id, $att );
 					update_post_meta( $post_id, '_o3dai_image_credit', sanitize_text_field( $stock['credit'] ) );
-					o3dai_log( 'Hlavný obrázok: zadarmo fotobanka – ' . $stock['credit'] );
+					o3dai_log( o3dai_t( 'log_featured_stock', array( 'credit' => $stock['credit'] ) ) );
 					return true;
 				}
 			} else {
-				o3dai_log( 'Hlavný obrázok: fotobanka zlyhala — ' . $stock->get_error_message() );
+				o3dai_log( o3dai_t( 'log_featured_stock_fail', array( 'err' => $stock->get_error_message() ) ) );
 			}
 		}
 		if ( $ai_mode ) {
-			// Free limit AI obrázkov: nechaj článok bez obrázka
+			// v1.6.7 – FREE build (wp.org): mäkký fair-use limit, len upozornenie a generovanie pokračuje.
+			// Pro build bez licencie: tvrdší limit — článok ostane bez hlavného obrázka.
 			if ( ! O3DAI_License::can_make_image() ) {
-				o3dai_log( o3dai_t( 'free_images_used', array( 'limit' => O3DAI_License::FREE_IMAGES ) ) );
+				if ( O3DAI_License::is_free_build() ) {
+					self::adv_log( 'images', o3dai_t( 'images_over_advisory', array( 'limit' => O3DAI_License::FREE_IMAGES ) ) ); // v1.9.x – do logu max 1x za mesiac
+				} else {
+					o3dai_log( o3dai_t( 'free_images_used', array( 'limit' => O3DAI_License::FREE_IMAGES ) ) );
+				}
 				update_option( 'o3dai_limit_hit', 'images', false );
-				return false;
+				if ( ! O3DAI_License::is_free_build() ) {
+					return false;
+				}
 			}
 			$png = self::make_image( $title, $subject, $s );
 			if ( ! is_wp_error( $png ) ) {
 				$att = self::attach_image( $post_id, $png, $title );
 				if ( $att ) {
 					set_post_thumbnail( $post_id, $att );
-					o3dai_log( 'Hlavný obrázok: vygenerovaný AI.' );
+					o3dai_log( o3dai_t( 'log_featured_ai_ok' ) );
 					return true;
 				}
 			} else {
-				o3dai_log( 'Hlavný obrázok: AI zlyhalo — ' . self::img_fail_hint( $png->get_error_message() ) );
+				o3dai_log( o3dai_t( 'log_featured_ai_fail', array( 'x' => self::img_fail_hint( $png->get_error_message() ) ) ) );
 			}
 		}
 		$ids = array_filter( array_map( 'intval', explode( ',', (string) $s['featured_ids'] ) ) );
 		if ( $ids ) {
 			set_post_thumbnail( $post_id, $ids[ $post_id % count( $ids ) ] );
-			o3dai_log( 'Hlavný obrázok: AI neprebehlo — použil som rotáciu ID z médií.' );
+			o3dai_log( o3dai_t( 'log_featured_id_rotation' ) );
 		} elseif ( $ai_mode ) {
-			o3dai_log( 'Hlavný obrázok: AI zlyhalo a nie je nastavený zoznam ID na rotáciu — článok bez hlavného obrázka.' );
+			o3dai_log( o3dai_t( 'log_featured_no_ids' ) );
 		}
 		return false;
 	}
@@ -1276,7 +1483,7 @@ class O3DAI_Generator {
 	public static function insert_body_images( $post_id, $content, $title, $subject, $s ) {
 		$count    = intval( $s['body_images'] ?? 0 );
 		$img_mode = O3DAI_License::eff_image_mode( (string) ( $s['image_mode'] ?? 'ids' ) );
-		if ( $count < 1 || ! in_array( $img_mode, array( 'ai', 'stock' ), true ) ) {
+		if ( $count < 1 || ! in_array( $img_mode, array( 'ai', 'local', 'stock' ), true ) ) {
 			return $content;
 		}
 		// pozície za </h2>...</p> – vložíme za prvý odsek nasledujúci po H2
@@ -1301,20 +1508,27 @@ class O3DAI_Generator {
 			if ( 'stock' === $img_mode ) {
 				$stock = self::stock_image( $title, $subject, $s );
 				if ( is_wp_error( $stock ) ) {
-					o3dai_log( 'Obrázky v texte: fotobanka zlyhala — ' . $stock->get_error_message() . ' — článok bez vkladných obrázkov.' );
+					o3dai_log( o3dai_t( 'log_body_stock_fail', array( 'err' => $stock->get_error_message() ) ) );
 					break;
 				}
 				$bin = $stock['bin'];
 				update_post_meta( $post_id, '_o3dai_image_credit', sanitize_text_field( $stock['credit'] ) );
 			} else {
 				if ( ! O3DAI_License::can_make_image() ) {
-					o3dai_log( o3dai_t( 'free_images_used', array( 'limit' => O3DAI_License::FREE_IMAGES ) ) );
-					break; // Free limit obrázkov vyčerpaný – nedopĺňaj ďalšie
+					if ( O3DAI_License::is_free_build() ) {
+						self::adv_log( 'images', o3dai_t( 'images_over_advisory', array( 'limit' => O3DAI_License::FREE_IMAGES ) ) ); // v1.9.x – do logu max 1x za mesiac
+					} else {
+						o3dai_log( o3dai_t( 'free_images_used', array( 'limit' => O3DAI_License::FREE_IMAGES ) ) );
+					}
+					update_option( 'o3dai_limit_hit', 'images', false );
+					if ( ! O3DAI_License::is_free_build() ) {
+						break; // Pro build bez licencie: limit obrázkov vyčerpaný – nedopĺňaj ďalšie (v1.6.7)
+					}
 				}
 				$bin = self::make_image( $title, $subject, $s );
 				if ( is_wp_error( $bin ) ) {
 					// Ak prvý zlyhá (napr. kvóta), ďalšie zlyhajú tiež — nahlas do logu, bez zbytočných API volaní
-					o3dai_log( 'Obrázky v texte: AI zlyhalo — ' . self::img_fail_hint( $bin->get_error_message() ) . ' — článok bez vkladných obrázkov.' );
+					o3dai_log( o3dai_t( 'log_body_ai_fail', array( 'x' => self::img_fail_hint( $bin->get_error_message() ) ) ) );
 					break;
 				}
 			}
@@ -1327,6 +1541,75 @@ class O3DAI_Generator {
 			}
 		}
 		return implode( '', $parts );
+	}
+
+	/** v1.8.0 – rozdelí HTML obsahu na bloky podľa <h2> sekcií; prvý blok = úvod bez H2 */
+	public static function article_sections( $html ) {
+		$parts = preg_split( '/(?=<h2[\s>])/', trim( (string) $html ) );
+		if ( ! is_array( $parts ) ) {
+			return array();
+		}
+		$out = array();
+		foreach ( $parts as $p ) {
+			if ( '' !== trim( (string) $p ) ) {
+				$out[] = $p;
+			}
+		}
+		return $out;
+	}
+
+	/** v1.8.0 – prepíše JEDNU sekciu článku (index 0 = úvod bez H2), zvyšok ostane nedotknutý */
+	public static function regen_section( $post_id, $index ) {
+		if ( ! O3DAI_License::has_api_key() ) {
+			return new WP_Error( 'o3dai', o3dai_t( 'no_api_key' ) );
+		}
+		$post = get_post( $post_id );
+		if ( ! $post ) {
+			return new WP_Error( 'o3dai', 'Článok neexistuje.' );
+		}
+		$sections = self::article_sections( $post->post_content );
+		$index    = intval( $index );
+		if ( ! isset( $sections[ $index ] ) ) {
+			return new WP_Error( 'o3dai', 'Sekcia neexistuje.' );
+		}
+
+		$s     = o3dai_get_settings();
+		$topic = get_the_title( $post_id );
+
+		// nadpis sekcie (prvá sekcia = úvod, H2 nemá)
+		preg_match( '/<h2[^>]*>.*?<\/h2>/s', $sections[ $index ], $hm );
+		$h2tag  = isset( $hm[0] ) ? trim( $hm[0] ) : '';
+		$h2text = ( '' === $h2tag ) ? '' : trim( wp_strip_all_tags( $h2tag ) );
+
+		$system = "Si skúsený slovenský copywriter a SEO špecialista. " . $s['instructions'] . " "
+			. "Prepíšeš JEDNU sekciu existujúceho článku. Zachovaj tón, štýl aj formát (HTML: odseky <p>, zoznamy <ul><li>, prípadne blok <div class=\"o3d-tip\">). "
+			. "Odpovedz VÝHRADNE HTML obsahom sekcie – bez komentárov a bez markdownu." . ( $h2tag ? ' Na začiatku odpovede nechaj nezmenený nadpis H2.' : ' Ide o ÚVOD článku – prvý odsek zabaľ do <p class=\"o3d-lead\">' );
+		$user   = "Téma článku: {$topic}\n"
+			. self::season_context() . "\n\n"
+			. ( $h2text ? 'Sekcia na prepisanie (H2): ' . $h2text . "\n" : '' )
+			. "Súčasný text sekcie:\n{$sections[$index]}\n\n"
+			. "Prepíš túto sekciu inak – nový uhol, čerstvé príklady, porovnateľná dĺžka (cca 120-350 slov). Interné odkazy <a> v nej ponechaj.";
+
+		$raw = O3DAI_Providers::generate( $system, $user, 2500 );
+		if ( is_wp_error( $raw ) ) {
+			return $raw;
+		}
+		$new = trim( (string) $raw );
+
+		// sanity check: minimálna dĺžka + aspoň jeden obsahový tag
+		if ( mb_strlen( $new ) < 80 || ! preg_match( '/<(p|ul|h2)[\s>]/', $new ) ) {
+			return new WP_Error( 'o3dai', o3dai_t( 'section_fail_invalid' ) );
+		}
+
+		// ak AI vynechala H2 nadpis, doplníme pôvodný na začiatok sekcie
+		if ( $h2tag && ! preg_match( '/<h2[^>]*>/', $new ) ) {
+			$new = $h2tag . "\n" . $new;
+		}
+
+		$sections[ $index ] = wp_kses_post( $new );
+		wp_update_post( array( 'ID' => $post_id, 'post_content' => implode( '', $sections ) ) );
+		o3dai_log( o3dai_t( 'log_section_regen', array( 'id' => intval( $post_id ), 'x' => (int) ( $index + 1 ) ) ) );
+		return true;
 	}
 
 	/** Parsovanie odpovede s ===MARKER=== oddeľovačmi */
@@ -1342,39 +1625,77 @@ class O3DAI_Generator {
 		return $out;
 	}
 
-	/** Znova vygeneruje ilustračný obrázok pre existujúci článok (podľa nastaveného režimu) */
+	/** v1.9.x – z obsahu článku AI vygeneruje anglický prompt na ilustračný obrázok (prázdny reťazec = fallback na pôvodný subjekt) */
+	private static function derive_image_prompt( $post_id ) {
+		$post_id = intval( $post_id );
+		if ( ! O3DAI_License::has_api_key() ) {
+			return '';
+		}
+		$post = get_post( $post_id );
+		if ( ! $post || 'post' !== $post->post_type || '' === trim( (string) $post->post_content ) ) {
+			return '';
+		}
+		$excerpt = wp_strip_all_tags( (string) $post->post_content );
+		$excerpt = preg_replace( '/\s+/u', ' ', (string) $excerpt );
+		$excerpt = mb_substr( trim( (string) $excerpt ), 0, 1500 );
+		$system  = 'You write image prompts for photo and AI-image models. Reply with ONE English sentence (max 25 words): a concrete photographic scene that visually represents the main idea of this article. One clear subject, real setting, natural light; no text or watermarks in the scene. Output ONLY the prompt, without quotes.';
+		$raw     = O3DAI_Providers::generate( $system, 'Article title: ' . get_the_title( $post_id ) . "\n\n" . $excerpt, 150 );
+		if ( is_wp_error( $raw ) || '' === trim( (string) $raw ) ) {
+			return '';
+		}
+		$prompt = preg_replace( '/^["\'“”‘’]+|[“”‘’"\']+$/u', '', trim( (string) $raw ) );
+		$prompt = '' === $prompt ? '' : trim( (string) $prompt );
+		if ( '' === $prompt || mb_strlen( $prompt ) > 400 ) {
+			return '';
+		}
+		o3dai_log( o3dai_t( 'log_img_prompt_derived', array( 'id' => $post_id, 'x' => substr( $prompt, 0, 120 ) ) ) );
+		return $prompt;
+	}
+
+	/** Znova vygeneruje ilustračný obrázok pre existujúci článok (podľa nastaveného režimu). v1.9.x: prompt odvodený z obsahu článku */
 	public static function regenerate_image( $post_id ) {
 		$s = o3dai_get_settings();
 		if ( 'none' === ( $s['image_mode'] ?? '' ) ) {
 			$s['image_mode'] = 'ai'; // režim „žiadny" → skús AI
 		}
 		$subject = get_post_meta( $post_id, '_o3dai_subject', true );
-		o3dai_log( 'Regenerujem obrázok pre #' . $post_id . ' (' . get_the_title( $post_id ) . ')…' );
+		// v1.9.x – nový anglický prompt z aktuálneho obsahu článku; bez API kľúča / pri zlyhaní ostáva pôvodný subjekt
+		$derived = self::derive_image_prompt( $post_id );
+		if ( '' !== $derived ) {
+			$subject = $derived;
+		}
+		o3dai_log( o3dai_t( 'log_regen_image_start', array( 'id' => $post_id, 'title' => get_the_title( $post_id ) ) ) );
 		$ok = self::set_featured( $post_id, get_the_title( $post_id ), $s, $subject );
-		o3dai_log( $ok ? 'Obrázok #' . $post_id . ' hotový (' . ( $s['image_model'] ?? '?' ) . ').' : 'Obrázok #' . $post_id . ' – pozri log vyššie.' );
-		return $post_id;
+		o3dai_log( $ok ? o3dai_t( 'log_regen_image_ok', array( 'id' => $post_id, 'model' => ( $s['image_model'] ?? '?' ) ) ) : o3dai_t( 'log_regen_image_fail', array( 'id' => $post_id ) ) );
+		return $ok;
 	}
 
 	/** Znova vygeneruje text článku na jeho pôvodnú/aktuálnu tému */
 	public static function regenerate_text( $post_id ) {
 		if ( ! O3DAI_License::has_api_key() ) {
-			o3dai_log( 'Regenerácia textu #' . intval( $post_id ) . ': ' . o3dai_t( 'no_api_key' ) );
+			o3dai_log( o3dai_t( 'log_regen_text_nokey', array( 'id' => intval( $post_id ) ) ) );
 			return new WP_Error( 'o3dai', o3dai_t( 'no_api_key' ) );
 		}
-		o3dai_log( 'Regenerujem text článku #' . intval( $post_id ) . '…' );
+		o3dai_log( o3dai_t( 'log_regen_text_start', array( 'id' => intval( $post_id ) ) ) );
 		$topic       = get_the_title( $post_id );
 		$s           = o3dai_get_settings();
 		$ctx         = self::site_context();
 		$series_note = ''; // regenerácia textu nemá sériu
 
-		// Krok 1: osnova (ak je zapnutá)
-		$outline = '';
-		if ( ! empty( $s['use_outline'] ) ) {
-			$outline = self::make_outline( $topic, $ctx, $series_note );
-			if ( $outline ) {
-				o3dai_log( 'Osnova pripravená pre: ' . $topic );
-			}
+		// v1.6.6 – produktové odkazy len pri reálnej relevance; bez relevantného produktu CTA vedie na kontakt/úvodnú
+		$use_products = ! empty( $s['product_links'] );
+		$prod_list    = $use_products ? self::filter_relevant_products( $topic, $ctx['products'] ) : array();
+		$has_products = ( ! empty( $prod_list ) );
+		$cta_href     = $has_products ? 'PRESNÁ_URL' : self::cta_fallback_url();
+
+		if ( $has_products ) {
+			$links_rule = 'POVINNÉ: 2-3 interné odkazy na produkty a 1 na iný článok.';
+			$prod_block = "=== PRODUKTY ===\n" . implode( "\n", $prod_list ) . "\n\n";
+		} else {
+			$links_rule = 'POVINNÉ: 1 interný odkaz na iný článok. Produktové odkazy vynechaj – žiadny relevantný produkt.';
+			$prod_block = '';
 		}
+
 
 		$system = "Si skúsený slovenský copywriter a SEO špecialista. "
 			. $s['instructions'] . " "
@@ -1386,21 +1707,30 @@ class O3DAI_Generator {
 			. "===FOCUS_KW===\n(2-4 slová)\n"
 			. "===IMAGE_SUBJECT===\n(in ENGLISH: 1 short phrase, 1-2 concrete " . ( $s['image_subject_hint'] ?? 'characters' ) . " that fit this article, with colors)\n"
 			. "===CONTENT===\n"
-			. "(HTML článku: úvod <p class=\"o3d-lead\">, sekcie <h2>, text <p>, zoznamy <ul>, aspoň jeden <div class=\"o3d-tip\">, jeden <div class=\"o3d-cta\">…<a class=\"o3d-cta-btn\" href=\"URL\">" . $s['cta_text'] . "</a></div>. POVINNÉ: 2-3 interné odkazy na produkty a 1 na iný článok.)\n"
+			. '(HTML článku: úvod <p class="o3d-lead">, sekcie <h2>, text <p>, zoznamy <ul>, aspoň jeden <div class="o3d-tip">, jeden <div class="o3d-cta">[krátky text]<a class="o3d-cta-btn" href="' . $cta_href . '">' . $s['cta_text'] . '</a></div>. Každú vetu dopiš do konca – NEPÍŠ „…“ ako výplň. ' . $links_rule . ')' . "\n" // v1.9.14 – slabšie modely kopírovali ukážku s „…“ doslova
 			. "===END===";
+		O3DAI_Progress::set_running( o3dai_t( 'step_outline', array( 't' => $topic ) ) ); // v1.9.x – živý stav
 		$outline = ! empty( $s['use_outline'] ) ? self::make_outline( $topic, $ctx ) : '';
+		if ( $outline ) { o3dai_log( o3dai_t( 'log_outline_done', array( 'x' => $topic ) ) ); } // v1.9.x – osnova hotová
 
 		$user = "Téma článku: {$topic}\n\n"
 			. ( $outline ? "=== OSNOVA (drž sa jej, každý riadok = jedna <h2> sekcia) ===\n" . $outline . "\n\n" : '' )
 			. "Web: {$ctx['site']}\n\n"
-			. "=== PRODUKTY ===\n" . implode( "\n", array_slice( $ctx['products'], 0, 25 ) ) . "\n\n"
+			. $prod_block
 			. "=== ČLÁNKY ===\n" . implode( "\n", $ctx['posts'] ) . "\n\n"
 			. "Napíš NOVÚ verziu článku na túto tému, iný uhol/štruktúra než predtým.";
 
-		$raw = O3DAI_Providers::generate( $system, $user, 8000 );
-		if ( is_wp_error( $raw ) ) { return $raw; }
+		O3DAI_Progress::set_running( o3dai_t( 'step_article_text', array( 't' => $topic ) ) ); // v1.9.x – živý stav
+		$o3d_txt0 = microtime( true ); // v1.9.x – meranie času generovania textu (lokálne modely trvajú minúty)
+		$raw = O3DAI_Providers::generate( $system, $user, 11000 ); // v1.9.13 – rovnaká poistka ako pri write_article (thinking model + oddeľovače)
+		if ( is_wp_error( $raw ) ) {
+			O3DAI_Progress::set_running( '' ); // v1.9.x – text zlyhal, stav čistíme
+			return $raw;
+		}
+		o3dai_log( o3dai_t( 'log_text_done', array( 's' => intval( round( microtime( true ) - $o3d_txt0 ) ) ) )); // v1.9.x – ako dlho trval text
 		$a = self::parse_markers( $raw );
 		if ( empty( $a['TITLE'] ) || empty( $a['CONTENT'] ) ) {
+			O3DAI_Progress::set_running( '' ); // v1.9.x – stav čistíme
 			return new WP_Error( 'o3dai', 'Regenerácia: odpoveď sa nepodarilo naparsovať.' );
 		}
 		wp_update_post( array(
@@ -1411,21 +1741,136 @@ class O3DAI_Generator {
 		) );
 		O3DAI_SEO::set_post( $post_id, $a['META_TITLE'] ?? '', $a['META_DESC'] ?? '', $a['FOCUS_KW'] ?? '' );
 		if ( ! empty( $a['IMAGE_SUBJECT'] ) ) { update_post_meta( $post_id, '_o3dai_subject', sanitize_text_field( $a['IMAGE_SUBJECT'] ) ); }
-		o3dai_log( 'Pregenerovaný text článku #' . $post_id );
+		O3DAI_Progress::set_running( '' ); // v1.9.x – regenerácia hotová, stav čistíme
+		o3dai_log( o3dai_t( 'log_regen_text_done', array( 'id' => $post_id ) ) );
 		return $post_id;
 	}
 
-	/** Vytiahne JSON aj z odpovede obalenej v ```json ... ``` */
+	/** Vytiahne JSON aj z odpovede obalenej v ```json ... ```. 
+	 *  v1.9.x – toleruje text okolo JSON (výsek od prvého {[ do posledného ]}) a orezaný výstup lokálnych modelov (doplní nezavretú reťazcu / zavinace).
+	 *  v1.9.7 – navyše: rozobale objekt s jediným poľom {"key":[...]} a ako poslednú zálohu
+	 *  spozná číslovaný/zakotaný zoznam aj bez jediného JSON znaku.
+	 *  v1.9.12 – ak reasoning/thinking text obsahuje vlastné zavinace, skúša všetky štarty [" / {" od konca dopredu
+	 *  (celý chvost, orez za posledným zavretím a oprava orezaného chvosta). */
 	public static function parse_json( $raw ) {
 		$raw = trim( (string) $raw );
 		$raw = preg_replace( '/^```(?:json)?\s*/i', '', $raw );
 		$raw = preg_replace( '/\s*```$/', '', $raw );
+
 		$data = json_decode( $raw, true );
-		if ( null === $data ) {
-			// posledný pokus: nájdi prvý { alebo [ a posledný } alebo ]
-			$start = strcspn( $raw, '{[' );
-			$data  = json_decode( substr( $raw, $start ), true );
+		if ( null !== $data ) { return self::parse_normalize( $data ); }
+
+		// výsek: od prvého {[ do posledného ]} — ignoruje text pred JSON aj za ním
+		$sub  = substr( $raw, strcspn( $raw, '{[' ) );
+		if ( '' !== $sub ) {
+			$i1   = strrpos( $sub, ']' );
+			$i2   = strrpos( $sub, '}' );
+			$end  = max( false === $i1 ? -1 : $i1, false === $i2 ? -1 : $i2 );
+			$cand = ( $end > 0 ) ? substr( $sub, 0, $end + 1 ) : $sub;
+
+			$data = json_decode( $cand, true );
+			if ( null !== $data ) { return self::parse_normalize( $data ); }
+
+			$fixed = self::repair_json_tail( $cand ); // orezaný JSON: dopln chýbajúce konce
+			if ( null !== $fixed ) { return self::parse_normalize( $fixed ); }
+		}
+
+		// v1.9.12 – reasoning/thinking text pred skutočným JSON zvyčajne obsahuje vlastné zavinace (napr. „prvý znak [ posledný ]"),
+		// takže výsek od prvého {[ padne na falošnú pozíciu. Skúsme všetky štarty [" a {" od konca dopredu;
+		// pre každý: celý chvost, orez za posledným zavretím a oprava orezaného chvosta.
+		$pos   = -1;
+		$cands = array();
+		while ( count( $cands ) < 64 ) {
+			$a    = strpos( $raw, '["', $pos + 1 );
+			$b    = strpos( $raw, '{"', $pos + 1 );
+			if ( false === $a && false === $b ) { break; }
+			$p    = ( false !== $a && ( false === $b || $a < $b ) ) ? $a : $b;
+			$cands[] = $p;
+			$pos   = $p;
+		}
+		for ( $i = count( $cands ) - 1; $i >= 0; $i-- ) {
+			$cand  = substr( $raw, $cands[ $i ] );
+			$i1    = strrpos( $cand, ']' );
+			$i2    = strrpos( $cand, '}' );
+			$end   = max( false === $i1 ? -1 : $i1, false === $i2 ? -1 : $i2 );
+			foreach ( array( $cand, ( $end > 0 ) ? substr( $cand, 0, $end + 1 ) : null ) as $t ) {
+				if ( null === $t ) { continue; }
+				$data = json_decode( $t, true );
+				if ( null !== $data && self::parse_is_string_list( self::parse_normalize( $data ) ) ) { return self::parse_normalize( $data ); }
+			}
+			$fixed = self::repair_json_tail( $cand ); // orezaný koncový znak: dopln reťazec a zavinace
+			if ( null !== $fixed && self::parse_is_string_list( self::parse_normalize( $fixed ) ) ) { return self::parse_normalize( $fixed ); }
+		}
+
+		return self::parse_list_lines( $raw ); // v1.9.7 – posledná záloha: číslovaný/zakotaný zoznam bez JSON-u
+	}
+
+	/** v1.9.7 – normalizuje decoded výsledok: objekt s jediným poľom {"key":[...]} → vnútorné pole (všetci volajúci očakávajú plohé pole reťazcov). */
+	private static function parse_normalize( $data ) {
+		if ( is_array( $data ) && 1 === count( $data ) ) {
+			$only = reset( $data );
+			if ( is_array( $only ) ) { return array_values( $only ); }
 		}
 		return $data;
+	}
+
+	/** v1.9.12 – je to ploché pole nenulových reťazcov? (všetci volajúci parse_json očakávajú práve to; chráni multi-candidate zálohu pred „odkodovaním“ fragmentov z reasoning textu) */
+	private static function parse_is_string_list( $data ) {
+		if ( ! is_array( $data ) || empty( $data ) ) { return false; }
+		foreach ( array_keys( $data ) as $i => $k ) { if ( $i !== $k ) { return false; } } // po parse_normalize musí ísť o plošný list 0..n-1
+		foreach ( $data as $v ) {
+			if ( ! is_scalar( $v ) || '' === trim( (string) $v ) ) { return false; }
+		}
+		return true;
+	}
+
+	/** v1.9.7 – záloha: číslovaný ("1. x" / "2) x") alebo zakotaný („- x“) zoznam → pole reťazcov; null, ak je ich menej ako 2. */
+	private static function parse_list_lines( $raw ) {
+		$m = array();
+		if ( ! @preg_match_all( '/^\s*(?:\d{1,3}\s*[).]\s+|[-*•]\s+)\s+(.+?)\s*$/mu', $raw, $m ) || count( $m[1] ) < 2 ) {
+			return null;
+		}
+		$items = array();
+		foreach ( $m[1] as $line ) {
+			$t = trim( trim( $line, "\"'" ) );
+			if ( '' !== $t ) {
+				$items[] = $t;
+			}
+		}
+		return ( count( $items ) >= 2 ) ? $items : null;
+	}
+
+	/** v1.9.7 – zaloguje ukážku surového výstupu AI, aby pri chybe parsovania bolo vidno, čo model reálne napísal. */
+	public static function log_parse_preview( $raw ) {
+		$raw = trim( (string) $raw );
+		if ( '' === $raw ) { return; }
+		if ( strlen( $raw ) > 400 ) {
+			$preview = substr( $raw, 0, 250 ) . ' …[stred vynechaný]… ' . substr( $raw, -150 );
+		} else {
+			$preview = $raw;
+		}
+		o3dai_log( o3dai_t( 'log_parse_preview', array( 'x' => $preview ) ) );
+	}
+
+	/** v1.9.x – oprava orezaného JSON: doplní nezavretú reťazcu a zavinace podľa stacku; vráti decoded alebo null. */
+	private static function repair_json_tail( $cand ) {
+		$stack  = array();
+		$in_str = false;
+		$esc    = false;
+		for ( $i = 0, $n = strlen( $cand ); $i < $n; $i++ ) {
+			$ch = $cand[ $i ];
+			if ( $in_str ) {
+				if ( $esc ) { $esc = false; } elseif ( '\\' === $ch ) { $esc = true; } elseif ( '"' === $ch ) { $in_str = false; }
+				continue;
+			}
+			if ( '"' === $ch ) { $in_str = true; continue; }
+			if ( '{' === $ch || '[' === $ch ) { $stack[] = $ch; continue; }
+			if ( '}' === $ch && ! empty( $stack ) && '{' === end( $stack ) ) { array_pop( $stack ); continue; }
+			if ( ']' === $ch && ! empty( $stack ) && '[' === end( $stack ) ) { array_pop( $stack ); continue; }
+		}
+		if ( $in_str ) { $cand .= '"'; }
+		while ( ',' === substr( rtrim( $cand ), -1 ) ) { $cand = substr( $cand, 0, -1 ); } // trailing comma pred doplnením koncov
+		while ( ! empty( $stack ) ) { $cand .= ( '{' === end( $stack ) ) ? '}' : ']'; array_pop( $stack ); }
+		return json_decode( $cand, true );
 	}
 }
