@@ -16,6 +16,17 @@ class O3DAI_Admin {
 		add_action( 'admin_notices', array( __CLASS__, 'bulk_notice' ) );
 		// AJAX: návrh news kľúčových slov podľa webu
 		add_action( 'wp_ajax_o3dai_news_kw_suggest', array( __CLASS__, 'suggest_news_keywords' ) );
+		// v1.8.0 – AJAX: prepis jednej sekcie článku (náhľad)
+		add_action( 'wp_ajax_o3dai_regen_section', array( __CLASS__, 'ajax_regen_section' ) );
+		// v1.9.0 – AJAX: zoznam checkpointov z lokálneho ComfyUI (Stability Matrix)
+		add_action( 'wp_ajax_o3dai_local_models', array( __CLASS__, 'ajax_local_models' ) );
+		add_action( 'wp_ajax_o3dai_test_image', array( __CLASS__, 'ajax_test_image' ) );
+		// v1.9.x – AJAX: pregenerovanie ilustračného obrázka podľa obsahu článku
+		add_action( 'wp_ajax_o3dai_regen_image', array( __CLASS__, 'ajax_regen_image' ) );
+		// v1.9.x – AJAX: zoznam textových modelov z lokálneho PC (Ollama / LM Studio)
+		add_action( 'wp_ajax_o3dai_local_text_models', array( __CLASS__, 'ajax_local_text_models' ) );
+		// v1.9.x – AJAX: zoznam textových modelov priamo zo ComfyUI (models/text_encoders)
+		add_action( 'wp_ajax_o3dai_text_comfy_models', array( __CLASS__, 'ajax_text_comfy_models' ) );
 	}
 
 	/** Uloženie nastavení — beží na admin_init, teda PRED výstupom admin stránky.
@@ -94,19 +105,21 @@ class O3DAI_Admin {
 		if ( in_array( $action, array( 'approve_proposal', 'reject_proposal', 'remove_proposal' ), true ) ) {
 			$pid  = intval( $_POST['prop'] ?? 0 );
 			$flag = 'applied_err';
-			if ( 'approve_proposal' === $action && $pid && O3DAI_Products::apply_proposal( $pid ) ) {
-				$flag = 'applied';
-			} elseif ( 'reject_proposal' === $action && $pid ) {
-				O3DAI_Products::reject_proposal( $pid );
-				$flag = 'rejected';
-			} elseif ( 'remove_proposal' === $action && $pid ) {
-				O3DAI_Products::remove_proposal( $pid );
-				$flag = 'removed';
+			if ( class_exists( 'O3DAI_Products' ) ) { // v1.6.7 – vo FREE buildi produktový modul neexistuje
+				if ( 'approve_proposal' === $action && $pid && O3DAI_Products::apply_proposal( $pid ) ) {
+					$flag = 'applied';
+				} elseif ( 'reject_proposal' === $action && $pid ) {
+					O3DAI_Products::reject_proposal( $pid );
+					$flag = 'rejected';
+				} elseif ( 'remove_proposal' === $action && $pid ) {
+					O3DAI_Products::remove_proposal( $pid );
+					$flag = 'removed';
+				}
 			}
 			wp_safe_redirect( admin_url( 'admin.php?page=o3dai&o3dai_prop=' . $flag . '&o3d_tab=products' ) );
 			exit;
 		}
-		if ( 'approve_all_proposals' === $action ) {
+		if ( 'approve_all_proposals' === $action && class_exists( 'O3DAI_Products' ) ) { // v1.6.7 – vo FREE buildi produktový modul neexistuje
 			$ok = 0;
 			foreach ( O3DAI_Products::pending_proposals() as $o3d_pid ) {
 				if ( O3DAI_Products::apply_proposal( $o3d_pid ) ) { $ok++; }
@@ -121,6 +134,12 @@ class O3DAI_Admin {
 		$s['api_key_openai'] = sanitize_text_field( wp_unslash( $_POST['api_key_openai'] ?? $s['api_key_openai'] ) );
 		$s['api_key_gemini'] = sanitize_text_field( wp_unslash( $_POST['api_key_gemini'] ?? $s['api_key_gemini'] ) );
 		$s['api_key_openrouter'] = sanitize_text_field( wp_unslash( $_POST['api_key_openrouter'] ?? $s['api_key_openrouter'] ) );
+		// v1.9.x – Lokálny PC pre text (Ollama / LM Studio)
+		$s['text_local_url']   = esc_url_raw( wp_unslash( $_POST['text_local_url'] ?? '' ) );
+		$s['text_local_model'] = sanitize_text_field( wp_unslash( $_POST['text_local_model'] ?? '' ) );
+		// v1.9.x – Lokálny PC pre text priamo cez ComfyUI (TextGenerate)
+		$s['text_comfy_url']   = esc_url_raw( wp_unslash( $_POST['text_comfy_url'] ?? '' ) );
+		$s['text_comfy_model'] = sanitize_text_field( wp_unslash( $_POST['text_comfy_model'] ?? '' ) );
 		$s['model']          = sanitize_text_field( wp_unslash( $_POST['model'] ?? $s['model'] ) );
 		$s['publish_status'] = sanitize_key( $_POST['publish_status'] ?? $s['publish_status'] );
 		$s['hour']           = max( 0, min( 23, intval( $_POST['hour'] ?? $s['hour'] ) ) );
@@ -135,8 +154,16 @@ class O3DAI_Admin {
 		}
 		$s['category_id']    = intval( $_POST['category_id'] ?? 0 );
 		$s['featured_ids']   = sanitize_text_field( wp_unslash( $_POST['featured_ids'] ?? '' ) );
-		$s['image_mode']     = in_array( sanitize_key( $_POST['image_mode'] ?? 'ids' ), array( 'ids', 'ai', 'stock', 'none' ), true ) ? sanitize_key( $_POST['image_mode'] ) : 'ids';
+		$s['image_mode']     = in_array( sanitize_key( $_POST['image_mode'] ?? 'ids' ), array( 'ids', 'ai', 'local', 'stock', 'none' ), true ) ? sanitize_key( $_POST['image_mode'] ) : 'ids';
 		$s['image_model']    = sanitize_text_field( wp_unslash( $_POST['image_model'] ?? $s['image_model'] ) );
+		// v1.9.0 – Lokálny PC: Stability Matrix / ComfyUI
+		$s['image_local_url']      = esc_url_raw( wp_unslash( $_POST['image_local_url'] ?? '' ) );
+		$s['image_local_model']    = sanitize_text_field( wp_unslash( $_POST['image_local_model'] ?? '' ) );
+		$s['image_local_negative'] = sanitize_text_field( wp_unslash( $_POST['image_local_negative'] ?? '' ) );
+		$s['image_local_steps']    = min( 150, max( 1, intval( $_POST['image_local_steps'] ?? 20 ) ) );
+		$s['image_local_cfg']      = min( 30, max( 1, (float) ( $_POST['image_local_cfg'] ?? 7 ) ) );
+		$s['image_local_width']    = min( 2048, max( 64, intval( $_POST['image_local_width'] ?? 1152 ) ) );
+		$s['image_local_height']   = min( 2048, max( 64, intval( $_POST['image_local_height'] ?? 768 ) ) );
 		// Zadarmo fotobanky (režim „stock“) + optimalizácia obrázkov
 		$s['stock_provider']    = in_array( sanitize_key( $_POST['stock_provider'] ?? 'pexels' ), array( 'pexels', 'pixabay', 'openverse' ), true ) ? sanitize_key( $_POST['stock_provider'] ) : 'pexels';
 		$s['stock_key_pexels']  = sanitize_text_field( wp_unslash( $_POST['stock_key_pexels'] ?? '' ) );
@@ -160,6 +187,7 @@ class O3DAI_Admin {
 		$s['image_style']    = sanitize_textarea_field( wp_unslash( $_POST['image_style'] ?? $s['image_style'] ) );
 		$s['body_images']      = max( 0, min( 2, intval( $_POST['body_images'] ?? $s['body_images'] ) ) );
 		$s['internal_linking'] = isset( $_POST['internal_linking'] ) ? 1 : 0;
+		$s['product_links']    = isset( $_POST['product_links'] ) ? 1 : 0;
 		$s['use_outline']      = isset( $_POST['use_outline'] ) ? 1 : 0;
 		$s['proofread']        = isset( $_POST['proofread'] ) ? 1 : 0;
 		$s['gsc_queries']      = sanitize_textarea_field( wp_unslash( $_POST['gsc_queries'] ?? $s['gsc_queries'] ) );
@@ -259,7 +287,7 @@ class O3DAI_Admin {
 		if ( empty( $words ) ) {
 			wp_send_json_error( array( 'message' => o3dai_t( 'news_suggest_failed' ) ) );
 		}
-		o3dai_log( 'News: AI navrhla kľúčové slová: ' . implode( ', ', $words ) );
+		o3dai_log( o3dai_t( 'log_news_ai_kw', array( 'x' => implode( ', ', $words ) ) ) );
 		wp_send_json_success( array( 'keywords' => implode( ', ', $words ) ) );
 	}
 
@@ -284,13 +312,20 @@ class O3DAI_Admin {
 		if ( ! empty( $_GET['o3dai_img'] ) ) {
 			echo '<div class="notice notice-info is-dismissible"><p>' . esc_html( o3dai_t( 'n_img_bg' ) ) . '</p></div>';
 		}
-		// Free limit dosiahnutý — výzva na upgrade (v1.5.0)
-		if ( ! O3DAI_License::is_pro() ) {
-			$o3d_limit = get_option( 'o3dai_limit_hit', '' );
-			if ( $o3d_limit ) {
-				$o3d_scr = function_exists( 'get_current_screen' ) ? get_current_screen() : null;
-				if ( $o3d_scr && 'toplevel_page_o3dai' === $o3d_scr->id ) {
-					echo wp_kses_post( O3DAI_License::upgrade_box( o3dai_t( 'limit_hit_' . $o3d_limit ) ) );
+		// v1.7.0 – mäkký fair-use limit (všetko je teraz free) — neutrálna výzva bez odznaku PRO / odkazu na upgrade
+		$o3d_limit = get_option( 'o3dai_limit_hit', '' );
+		if ( $o3d_limit ) {
+			$o3d_scr = function_exists( 'get_current_screen' ) ? get_current_screen() : null;
+			if ( $o3d_scr && 'toplevel_page_o3dai' === $o3d_scr->id ) {
+				if ( 'images' === $o3d_limit ) {
+					$o3d_msg = o3dai_t( 'limit_hit_images_advisory', array( 'limit' => O3DAI_License::FREE_IMAGES ) );
+				} elseif ( 'articles' === $o3d_limit ) {
+					$o3d_msg = o3dai_t( 'limit_hit_articles_advisory', array( 'limit' => O3DAI_License::FREE_ARTICLES ) );
+				} else {
+					$o3d_msg = '';
+				}
+				if ( $o3d_msg ) {
+					echo '<div class="notice notice-info is-dismissible"><p>' . esc_html( $o3d_msg ) . '</p></div>';
 				}
 			}
 		}
@@ -298,6 +333,8 @@ class O3DAI_Admin {
 
 	public static function menu() {
 		add_menu_page( 'AI Autopilot', 'AI Autopilot', 'manage_options', 'o3dai', array( __CLASS__, 'page' ), 'dashicons-superhero', 58 );
+		// v1.8.0 – náhľad článku s možnosťou prepísať jednotlivé H2 sekcie
+		add_submenu_page( 'o3dai', o3dai_t( 'preview_menu' ), o3dai_t( 'a_preview' ), 'manage_options', 'o3dai-article', array( __CLASS__, 'article_preview' ) );
 	}
 
 	public static function page() {
@@ -464,6 +501,15 @@ class O3DAI_Admin {
 			$o3d_cls = ( 'applied_err' === $o3d_prop ) ? 'notice-error' : 'notice-success';
 			echo '<div class="notice ' . esc_attr( $o3d_cls ) . ' is-dismissible"><p>' . esc_html( $o3d_msg ) . '</p></div>';
 		}
+		// v1.9.x – živý stav bežiacej úlohy (generovanie článku/temy) – hore nad všetkými záložkami, auto-obnovenie cez AJAX
+		$o3d_live = O3DAI_Progress::running();
+		if ( $o3d_live ) {
+			$o3d_ln   = wp_create_nonce( 'o3dai_progress' );
+			$o3d_lurl = admin_url( 'admin-ajax.php?action=o3dai_running&nonce=' . rawurlencode( $o3d_ln ) );
+			echo '<div class="notice notice-info" id="o3d-live-notice"><p><strong>' . esc_html( o3dai_t( 'live_title' ) ) . ':</strong> <span id="o3d-live-label">' . esc_html( $o3d_live['label'] ) . '</span> <span id="o3d-live-el" style="opacity:.65">(' . intval( time() - $o3d_live['ts'] ) . ' s)</span></p></div>';
+			echo '<script>(function(){var a=' . wp_json_encode( $o3d_lurl ) . ',l=document.getElementById("o3d-live-label"),e=document.getElementById("o3d-live-el"),c=document.getElementById("o3d-live-notice");setInterval(function(){fetch(a,{credentials:"same-origin"}).then(function(r){return r.json();}).then(function(d){if(d&&d.success&&d.data.label){l.textContent=d.data.label;e.textContent="("+d.data.elapsed+" s)";}else if(c&&c.parentNode){c.parentNode.removeChild(c);}}).catch(function(){});},10000);})();</script>';
+		}
+
 		$topics = get_option( 'o3dai_topics', array() );
 		$log    = array_reverse( get_option( 'o3dai_log', array() ) );
 		$next   = o3dai_next_run_ts();
@@ -479,14 +525,7 @@ class O3DAI_Admin {
 		?>
 		<div class="wrap o3d-wrap<?php echo O3DAI_License::is_free_build() ? ' o3d-free' : ''; ?>">
 			<div class="o3d-hero">
-				<h1>🤖 <?php echo esc_html( $s['brand_name'] ?? '' ); ?> <?php echo esc_html( o3dai_t( 'plugin_title' ) ); ?>
-												<?php if ( ! O3DAI_License::is_free_build() ) : ?>
-<?php if ( O3DAI_License::is_pro() ) : ?>
-							<span class="o3d-plan o3d-plan-pro" style="margin-left:10px">★ <?php echo esc_html( o3dai_t( 'plan_pro' ) ); ?></span>
-						<?php else : ?>
-							<span class="o3d-plan o3d-plan-free" style="margin-left:10px"><?php echo esc_html( o3dai_t( 'plan_free' ) ); ?></span>
-						<?php endif; ?>
-						<?php endif; ?></h1>
+				<h1>🤖 <?php echo esc_html( $s['brand_name'] ?? '' ); ?> <?php echo esc_html( o3dai_t( 'plugin_title' ) ); ?></h1>
 				<div class="o3d-next">📅 <?php echo esc_html( o3dai_t( 'next_run' ) ); ?>: <strong><?php echo $next ? esc_html( get_date_from_gmt( gmdate( 'Y-m-d H:i:s', $next ), 'j.n.Y H:i' ) ) : '—'; ?></strong></div>
 			</div>
 
@@ -497,6 +536,7 @@ class O3DAI_Admin {
 			<button type="button" class="o3d-tab" data-tab="topics"><span class="dashicons dashicons-visibility"></span> <?php echo esc_html( o3dai_t( 'tab_topics' ) ); ?></button>
 			<button type="button" class="o3d-tab" data-tab="products"><span class="dashicons dashicons-products"></span> <?php echo esc_html( o3dai_t( 'tab_products' ) ); ?></button>
 			<button type="button" class="o3d-tab" data-tab="settings"><span class="dashicons dashicons-admin-settings"></span> <?php echo esc_html( o3dai_t( 'tab_settings' ) ); ?></button>
+			<button type="button" class="o3d-tab" data-tab="test"><span class="dashicons dashicons-experiments"></span> <?php echo esc_html( o3dai_t( 'tab_test' ) ); ?></button>
 			<button type="button" class="o3d-tab" data-tab="debug"><span class="dashicons dashicons-search"></span> <?php echo esc_html( o3dai_t( 'tab_debug' ) ); ?></button>
 		</div>
 
@@ -523,7 +563,6 @@ class O3DAI_Admin {
 					<p class="o3d-act-desc"><?php echo esc_html( o3dai_t( 'act_news_desc' ) ); ?></p>
 					<button type="submit" class="o3d-btn o3d-btn-primary" name="o3dai_action" value="news"><?php echo esc_html( o3dai_t( 'act_go' ) ); ?></button>
 				</form>
-					<?php if ( ! O3DAI_License::is_free_build() ) : ?>
 <form method="post" class="o3d-action-card">
 					<?php wp_nonce_field( 'o3dai' ); ?>
 					<input type="hidden" name="o3d_tab" value="overview">
@@ -531,15 +570,7 @@ class O3DAI_Admin {
 					<p class="o3d-act-desc"><?php echo esc_html( o3dai_t( 'act_series_desc' ) ); ?></p>
 					<button type="submit" class="o3d-btn o3d-btn-primary" name="o3dai_action" value="suggest_series"><?php echo esc_html( o3dai_t( 'act_go' ) ); ?></button>
 				</form>
-				<?php endif; ?>
 				</div>
-					<?php if ( O3DAI_License::is_free_build() ) : ?>
-					<div class="o3d-card" style="border-left:4px solid #6C4AB6">
-						<h2><span class="dashicons dashicons-star-filled"></span> <?php echo esc_html( o3dai_t( 'ov_pro_title' ) ); ?></h2>
-						<p class="o3d-act-desc" style="margin:0 0 14px"><?php echo esc_html( o3dai_t( 'ov_pro_desc' ) ); ?></p>
-						<a class="o3d-btn o3d-btn-primary" style="text-decoration:none;align-self:flex-start" href="<?php echo esc_url( O3DAI_License::upgrade_url() ); ?>">★ <?php echo esc_html( o3dai_t( 'ov_pro_btn' ) ); ?></a>
-					</div>
-				<?php endif; ?>
 			<p class="description o3d-ov-hint"><?php echo esc_html( o3dai_t( 'ov_hint' ) ); ?></p>
 				<div class="o3d-overview-grid">
 					<div>
@@ -554,19 +585,55 @@ class O3DAI_Admin {
 							<div class="o3d-stat"><div class="n">~$<?php echo number_format( $icost, 2 ); ?></div><div class="l"><?php echo esc_html( o3dai_t( 'u_cost_img' ) ); ?></div></div>
 							<div class="o3d-stat"><div class="n"><?php echo intval( $u['products'] ?? 0 ); ?></div><div class="l"><?php echo esc_html( o3dai_t( 'u_products' ) ); ?></div></div>
 							<div class="o3d-stat"><div class="n"><?php echo intval( $u['categories'] ?? 0 ); ?></div><div class="l"><?php echo esc_html( o3dai_t( 'u_categories' ) ); ?></div></div>
-														<?php if ( ! O3DAI_License::is_pro() ) : $o3d_atm = O3DAI_License::articles_this_month(); ?>
+														<?php $o3d_atm = O3DAI_License::articles_this_month(); ?>
 							<div class="o3d-stat" style="<?php echo $o3d_atm >= O3DAI_License::FREE_ARTICLES ? 'background:#fffaf0' : ''; ?>">
 								<div class="n"><?php echo esc_html( $o3d_atm ); ?></div>
 								<div class="l"><?php echo esc_html( o3dai_t( 'articles_this_month_l' ) . ( $o3d_atm >= O3DAI_License::FREE_ARTICLES ? ' ⚠' : '' ) ); ?></div>
 							</div>
-							<div class="o3d-stat">
-								<div class="n">∞</div>
-								<div class="l"><?php echo esc_html( o3dai_t( 'pro_unlimited_l' ) ); ?></div>
-							</div>
-							<?php endif; ?>
 							<div class="o3d-stat total"><div class="n">~$<?php echo esc_html( number_format( $tcost + $icost, 2 ) ); ?></div><div class="l"><?php echo esc_html( o3dai_t( 'u_total' ) ); ?> · <?php echo esc_html( number_format_i18n( ( $u['in_tokens'] ?? 0 ) + ( $u['out_tokens'] ?? 0 ) ) ); ?> <?php echo esc_html( o3dai_t( 'u_tokens' ) ); ?></div></div>
 						</div>
 						<p class="description" style="margin-top:12px"><?php echo esc_html( o3dai_t( 'u_note' ) ); ?></p>
+<details style="margin-top:10px">
+	<summary style="cursor:pointer;font-size:12px;color:#6C4AB6"><?php echo esc_html( o3dai_t( 'usage_history_btn' ) ); ?></summary>
+	<?php $o3d_hist = O3DAI_License::usage_history(); ?>
+	<?php if ( $o3d_hist ) :
+		$o3d_hta = 0; $o3d_him = 0; $o3d_hpp = 0; $o3d_hcat = 0; $o3d_hcost = 0.0;
+		foreach ( $o3d_hist as $o3d_hr ) {
+			$o3d_hta += $o3d_hr['text_calls']; $o3d_him += $o3d_hr['images']; $o3d_hpp += $o3d_hr['products']; $o3d_hcat += $o3d_hr['categories']; $o3d_hcost += $o3d_hr['cost'];
+		}
+	?>
+	<table class="o3d-tt" style="margin-top:8px">
+		<thead><tr>
+			<th><?php echo esc_html( o3dai_t( 'hist_month' ) ); ?></th>
+			<th style="width:64px"><?php echo esc_html( o3dai_t( 'u_articles' ) ); ?></th>
+			<th style="width:60px"><?php echo esc_html( o3dai_t( 'u_images' ) ); ?></th>
+			<th style="width:64px"><?php echo esc_html( o3dai_t( 'u_products' ) ); ?></th>
+			<th style="width:72px"><?php echo esc_html( o3dai_t( 'u_categories' ) ); ?></th>
+			<th style="width:80px"><?php echo esc_html( o3dai_t( 'hist_cost' ) ); ?></th>
+		</tr></thead>
+		<tbody>
+		<?php foreach ( $o3d_hist as $o3d_ym => $o3d_hr ) : ?>
+			<tr>
+				<td><?php echo esc_html( date_i18n( 'F Y', strtotime( $o3d_ym . '-01 00:00:00' ) ) ); ?></td>
+				<td><?php echo (int) $o3d_hr['text_calls']; ?></td>
+				<td><?php echo (int) $o3d_hr['images']; ?></td>
+				<td><?php echo (int) $o3d_hr['products']; ?></td>
+				<td><?php echo (int) $o3d_hr['categories']; ?></td>
+				<td>~$<?php echo esc_html( number_format( $o3d_hr['cost'], 2 ) ); ?></td>
+			</tr>
+		<?php endforeach; ?>
+		<tr style="font-weight:600;background:#f7f5fb">
+			<td><?php echo esc_html( o3dai_t( 'hist_total' ) ); ?></td>
+			<td><?php echo (int) $o3d_hta; ?></td>
+			<td><?php echo (int) $o3d_him; ?></td>
+			<td><?php echo (int) $o3d_hpp; ?></td>
+			<td><?php echo (int) $o3d_hcat; ?></td>
+			<td>~$<?php echo esc_html( number_format( $o3d_hcost, 2 ) ); ?></td>
+		</tr>
+		</tbody>
+	</table>
+	<?php endif; ?>
+</details>
 					</div>
 					</div>
 					<div>
@@ -619,15 +686,12 @@ class O3DAI_Admin {
 							<input type="text" name="new_topic" placeholder="<?php echo esc_attr( o3dai_t( 'ph_topic' ) ); ?>">
 							<button class="o3d-btn o3d-btn-ghost" name="o3dai_action" value="add_topic"><?php echo esc_html( o3dai_t( 'act_add' ) ); ?></button>
 						</form>
-							<?php if ( ! O3DAI_License::is_free_build() ) : ?>
 <form method="post" class="o3d-addbar">
 							<?php wp_nonce_field( 'o3dai' ); ?>
 							<input type="hidden" name="o3d_tab" value="topics">
 							<input type="text" name="series_theme" placeholder="<?php echo esc_attr( o3dai_t( 'ph_series' ) ); ?>">
 							<button class="o3d-btn o3d-btn-ghost" name="o3dai_action" value="series"><?php echo esc_html( o3dai_t( 'act_make_series' ) ); ?></button>
 						</form>
-						<?php endif; ?>
-							<?php if ( ! O3DAI_License::is_free_build() ) : ?>
 <form method="post" style="margin-bottom:14px">
 							<?php wp_nonce_field( 'o3dai' ); ?>
 							<input type="hidden" name="o3d_tab" value="topics">
@@ -645,8 +709,6 @@ class O3DAI_Admin {
 								</div>
 							<?php endif; ?>
 						</form>
-						<?php endif; ?>
-							<?php if ( ! O3DAI_License::is_free_build() ) : ?>
 <form method="post" style="margin-bottom:14px">
 							<?php wp_nonce_field( 'o3dai' ); ?>
 							<input type="hidden" name="o3d_tab" value="topics">
@@ -667,7 +729,6 @@ class O3DAI_Admin {
 								</div>
 							<?php endif; ?>
 						</form>
-						<?php endif; ?>
 						<form method="post">
 							<?php wp_nonce_field( 'o3dai' ); ?>
 							<input type="hidden" name="o3d_tab" value="topics">
@@ -700,7 +761,7 @@ class O3DAI_Admin {
 									$pills   = '';
 									if ( ! empty( $t['series'] ) ) { $pills .= ' <span class="o3d-pill" style="font-size:10px">📚 ' . esc_html( $t['series'] ) . ' · ' . intval( $t['series_part'] ) . '.&nbsp;</span>'; }
 									if ( 'news' === ( $t['source'] ?? '' ) ) { $pills .= ' <span class="o3d-pill" style="font-size:10px">📰</span>'; }
-									$article = ! empty( $t['post_id'] ) ? '<a href="' . esc_url( get_edit_post_link( $t['post_id'] ) ) . '">' . esc_html( o3dai_t( 'edit_arrow' ) ) . '</a>' : '—';
+									$article = ! empty( $t['post_id'] ) ? '<a href="' . esc_url( get_edit_post_link( $t['post_id'] ) ) . '" title="' . esc_attr( o3dai_t( 'edit_arrow' ) ) . '">' . esc_html( o3dai_t( 'edit_arrow' ) ) . '</a> <a href="' . esc_url( admin_url( 'admin.php?page=o3dai-article&id=' . (int) $t['post_id'] ) ) . '" title="' . esc_attr( o3dai_t( 'a_preview' ) ) . '">👁</a>' : '—';
 									$actions = '';
 									if ( 'done' !== $t['status'] ) {
 										$actions .= '<button class="o3d-minibtn" name="topic_op" value="top:' . (int) $i . '" title="' . esc_attr( o3dai_t( 'a_top' ) ) . '">⇧</button>';
@@ -736,16 +797,16 @@ class O3DAI_Admin {
 								<?php if ( $o3d_sections['pending'] ) : ?>
 								<tr class="o3d-sec"><td colspan="4"><span class="o3d-sech">⏳ <?php echo esc_html( o3dai_t( 'q_sec_pending' ) ); ?></span> <span class="o3d-pill"><?php echo esc_html( count( $o3d_sections['pending'] ) ); ?></span></td></tr>
 								<?php foreach ( $o3d_pending_view as $o3d_p ) : ?>
-									<?php echo $o3d_topic_row( $o3d_p[0], $o3d_p[1] ); ?>
+									<?php echo wp_kses_post( $o3d_topic_row( $o3d_p[0], $o3d_p[1] ) ); ?>
 								<?php endforeach; ?>
-								<?php echo $o3d_pager_row( 'p', $o3d_pp, $o3d_p_pages ); ?>
+								<?php echo wp_kses_post( $o3d_pager_row( 'p', $o3d_pp, $o3d_p_pages ) ); ?>
 								<?php endif; ?>
 								<?php if ( $o3d_sections['done'] ) : ?>
 								<tr class="o3d-sec"><td colspan="4"><span class="o3d-sech">✅ <?php echo esc_html( o3dai_t( 'q_sec_published' ) ); ?></span> <span class="o3d-pill"><?php echo esc_html( count( $o3d_sections['done'] ) ); ?></span></td></tr>
 								<?php foreach ( $o3d_done_view as $o3d_p ) : ?>
-									<?php echo $o3d_topic_row( $o3d_p[0], $o3d_p[1] ); ?>
+									<?php echo wp_kses_post( $o3d_topic_row( $o3d_p[0], $o3d_p[1] ) ); ?>
 								<?php endforeach; ?>
-								<?php echo $o3d_pager_row( 'd', $o3d_dp, $o3d_d_pages ); ?>
+								<?php echo wp_kses_post( $o3d_pager_row( 'd', $o3d_dp, $o3d_d_pages ) ); ?>
 								<?php endif; ?>
 							<?php endif; ?>
 								</tbody>
@@ -882,7 +943,6 @@ class O3DAI_Admin {
 					<form method="post">
 						<?php wp_nonce_field( 'o3dai' ); ?>
 						<input type="hidden" name="o3d_tab" value="settings">
-						<?php $is_pro = O3DAI_License::is_pro(); ?>
 						<div class="o3d-savebar">
 							<button class="o3d-btn o3d-btn-primary o3d-btn-lg" name="o3dai_action" value="save">💾 <?php echo esc_html( o3dai_t( 'save_settings' ) ); ?></button>
 							<input type="text" class="o3d-tpl-name" name="template_name" placeholder="<?php echo esc_attr( o3dai_t( 'tpl_name_ph' ) ); ?>">
@@ -899,16 +959,18 @@ class O3DAI_Admin {
 							</div>
 							<div class="o3d-row2">
 								<div class="o3d-field">
-									<label class="o3d-lbl">AI provider (text)</label>
+									<label class="o3d-lbl"><?php echo esc_html( o3dai_t( 'provider_l' ) ); ?></label>
 									<select name="provider" id="o3d-provider">
 										<option value="claude" <?php selected( $s['provider'], 'claude' ); ?>>Anthropic Claude</option>
 										<option value="openai" <?php selected( $s['provider'], 'openai' ); ?>>OpenAI</option>
 										<option value="gemini" <?php selected( $s['provider'], 'gemini' ); ?>>Google Gemini</option>
-										<option value="openrouter" <?php selected( $s['provider'], 'openrouter' ); ?>>OpenRouter (200+ modelov, 1 kľúč)</option>
+										<option value="openrouter" <?php selected( $s['provider'], 'openrouter' ); ?>><?php echo esc_html( o3dai_t( 'prov_openrouter' ) ); ?></option>
+									<option value="local" <?php selected( $s['provider'], 'local' ); ?>><?php echo esc_html( o3dai_t( 'prov_local' ) ); ?></option>
+									<option value="comfyui" <?php selected( $s['provider'], 'comfyui' ); ?>><?php echo esc_html( o3dai_t( 'prov_comfy' ) ); ?></option>
 									</select>
 								</div>
 								<div class="o3d-field">
-									<label class="o3d-lbl">Model</label>
+									<label class="o3d-lbl"><?php echo esc_html( o3dai_t( 'model_l' ) ); ?></label>
 									<select name="model" id="o3d-model"></select>
 									<p class="description"><?php echo esc_html( o3dai_t( 'model_dropdown_hint' ) ); ?></p>
 								</div>
@@ -920,9 +982,6 @@ class O3DAI_Admin {
 										<option value="draft" <?php selected( $s['publish_status'], 'draft' ); ?>><?php echo esc_html( o3dai_t( 'st_draft' ) ); ?></option>
 										<option value="publish" <?php selected( $s['publish_status'], 'publish' ); ?>><?php echo esc_html( o3dai_t( 'st_publish_now' ) ); ?></option>
 										<option value="approval" <?php selected( $s['publish_status'], 'approval' ); ?>><?php echo esc_html( o3dai_t( 'st_approval' ) ); ?></option>
-									<?php if ( ! O3DAI_License::is_pro() && ! O3DAI_License::is_free_build() ) : ?>
-										<div style="font-size:11px;color:#646970;margin-top:4px"><?php echo esc_html( o3dai_t( 'free_publish_hint' ) ); ?></div>
-									<?php endif; ?>
 									</select>
 								</div>
 								<div class="o3d-field">
@@ -962,24 +1021,12 @@ class O3DAI_Admin {
 										<option value="sk" <?php selected( $s['ui_lang'] ?? 'en', 'sk' ); ?>><?php echo esc_html( o3dai_t( 'sk_lang_name' ) ); ?></option>
 									</select>
 								</div>
-								<?php if ( ! O3DAI_License::is_free_build() && ! function_exists( 'o3dai_fs' ) ) : ?>
-								<div class="o3d-field">
-									<label class="o3d-lbl">&nbsp;</label>
-									<div class="o3d-toggle" style="padding-top:6px">
-										<input type="checkbox" id="o3d-simfree" name="simulate_free" <?php checked( $s['simulate_free'] ?? 0, 1 ); ?>>
-										<label for="o3d-simfree" style="margin:0;font-size:13px"><?php echo esc_html( o3dai_t( 'sim_free' ) ); ?></label>
-									</div>
-									<p class="description"><?php echo esc_html( o3dai_t( 'sim_free_hint' ) ); ?></p>
-								</div>
-								<?php else : ?>
 								<div class="o3d-field"></div>
-								<?php endif; ?>
 							</div>
 						</div>
 
-							<?php if ( ! O3DAI_License::is_free_build() ) : ?>
 <div class="o3d-card">
-							<h2><span class="dashicons dashicons-share"></span> <?php echo esc_html( o3dai_t( 'card_social' ) ); ?> <?php if ( ! O3DAI_License::is_pro() ) { echo wp_kses_post( O3DAI_License::pro_badge() ); } ?></h2>
+							<h2><span class="dashicons dashicons-share"></span> <?php echo esc_html( o3dai_t( 'card_social' ) ); ?></h2>
 							<div class="o3d-field">
 								<label class="o3d-lbl"><?php echo esc_html( o3dai_t( 'webhook_social' ) ); ?> <span class="description" style="font-weight:400"><?php echo esc_html( o3dai_t( 'optional' ) ); ?></span></label>
 								<input type="text" name="webhook_url" value="<?php echo esc_attr( $s['webhook_url'] ?? '' ); ?>" placeholder="https://hook.eu2.make.com/…">
@@ -1028,7 +1075,6 @@ class O3DAI_Admin {
 							<button type="submit" class="o3d-btn o3d-btn-primary o3d-btn-sm" name="o3dai_action" value="share_now" style="margin-top:10px"><?php echo esc_html( o3dai_t( 'share_now_btn' ) ); ?></button>
 							<p class="description"><?php echo esc_html( o3dai_t( 'share_now_hint' ) ); ?></p>
 						</div>
-						<?php endif; ?>
 
 						<div class="o3d-card">
 							<h2><span class="dashicons dashicons-admin-network"></span> <?php echo esc_html( o3dai_t( 'card_keys' ) ); ?></h2>
@@ -1036,7 +1082,43 @@ class O3DAI_Admin {
 							<div class="o3d-field"><label class="o3d-lbl"><?php echo esc_html( o3dai_t( 'key_openai' ) ); ?></label><input type="password" name="api_key_openai" value="<?php echo esc_attr( $s['api_key_openai'] ); ?>"></div>
 							<div class="o3d-field"><label class="o3d-lbl"><?php echo esc_html( o3dai_t( 'key_gemini' ) ); ?></label><input type="password" name="api_key_gemini" value="<?php echo esc_attr( $s['api_key_gemini'] ); ?>"></div>
 							<div class="o3d-field"><label class="o3d-lbl"><?php echo esc_html( o3dai_t( 'key_openrouter' ) ); ?></label><input type="password" name="api_key_openrouter" value="<?php echo esc_attr( $s['api_key_openrouter'] ?? '' ); ?>"></div>
-						</div>
+							<hr style="border:0;border-top:1px dashed #d8d2ea;margin:18px 0">
+							<span class="o3d-lbl" style="display:block;margin-bottom:5px"><?php echo esc_html( o3dai_t( 'prov_local' ) ); ?></span>
+							<div class="o3d-field">
+								<label class="o3d-lbl"><?php echo esc_html( o3dai_t( 'text_local_url_l' ) ); ?></label>
+								<input type="text" name="text_local_url" value="<?php echo esc_attr( $s['text_local_url'] ?? '' ); ?>" placeholder="http://192.168.0.10:11434">
+								<p class="description"><?php echo esc_html( o3dai_t( 'text_local_hint' ) ); ?></p>
+							</div>
+							<div class="o3d-field">
+								<label class="o3d-lbl"><?php echo esc_html( o3dai_t( 'text_local_model_l' ) ); ?></label>
+								<select name="text_local_model" id="o3dai-select-text-local-model">
+									<option value="" <?php selected( empty( $s['text_local_model'] ?? '' ) ); ?>><?php echo esc_html( o3dai_t( 'local_sel_auto_text' ) ); ?></option>
+								<?php if ( ! empty( $s['text_local_model'] ?? '' ) ) : ?>
+									<option value="<?php echo esc_attr( $s['text_local_model'] ); ?>" selected><?php echo esc_html( $s['text_local_model'] ); ?></option>
+									<?php endif; ?>
+								</select>
+								<p style="margin:8px 0 0"><button type="button" class="o3d-btn o3d-btn-ghost o3d-btn-sm" id="o3dai-load-local-text-models"><?php echo esc_html( o3dai_t( 'local_models_btn' ) ); ?></button></p>
+								<p class="description"><?php echo esc_html( o3dai_t( 'text_local_model_hint' ) ); ?></p>
+							</div>
+					<hr style="border:0;border-top:1px dashed #d8d2ea;margin:18px 0">
+					<span class="o3d-lbl" style="display:block;margin-bottom:5px"><?php echo esc_html( o3dai_t( 'prov_comfy' ) ); ?></span>
+					<div class="o3d-field">
+						<label class="o3d-lbl"><?php echo esc_html( o3dai_t( 'text_comfy_url_l' ) ); ?></label>
+						<input type="text" name="text_comfy_url" value="<?php echo esc_attr( $s['text_comfy_url'] ?? '' ); ?>" placeholder="http://192.168.0.10:8188">
+						<p class="description"><?php echo esc_html( o3dai_t( 'text_comfy_url_hint' ) ); ?></p>
+					</div>
+					<div class="o3d-field">
+						<label class="o3d-lbl"><?php echo esc_html( o3dai_t( 'text_comfy_model_l' ) ); ?></label>
+						<select name="text_comfy_model" id="o3dai-select-text-comfy-model">
+							<option value="" <?php selected( empty( $s['text_comfy_model'] ?? '' ) ); ?>><?php echo esc_html( o3dai_t( 'local_sel_auto_comfy' ) ); ?></option>
+						<?php if ( ! empty( $s['text_comfy_model'] ?? '' ) ) : ?>
+							<option value="<?php echo esc_attr( $s['text_comfy_model'] ); ?>" selected><?php echo esc_html( $s['text_comfy_model'] ); ?></option>
+							<?php endif; ?>
+						</select>
+						<p style="margin:8px 0 0"><button type="button" class="o3d-btn o3d-btn-ghost o3d-btn-sm" id="o3dai-load-text-comfy-models"><?php echo esc_html( o3dai_t( 'local_models_btn' ) ); ?></button></p>
+						<p class="description"><?php echo esc_html( o3dai_t( 'text_comfy_model_hint' ) ); ?></p>
+					</div>
+				</div>
 
 						<div class="o3d-card">
 							<h2><span class="dashicons dashicons-store"></span> <?php echo esc_html( o3dai_t( 'card_brand' ) ); ?></h2>
@@ -1075,31 +1157,69 @@ class O3DAI_Admin {
 									<label class="o3d-lbl"><?php echo esc_html( o3dai_t( 'image_mode' ) ); ?></label>
 									<select name="image_mode">
 										<option value="ids" <?php selected( $s['image_mode'], 'ids' ); ?>><?php echo esc_html( o3dai_t( 'mode_ids' ) ); ?></option>
-											<?php if ( ! O3DAI_License::is_free_build() ) : ?>
-									<option value="ai" <?php selected( $s['image_mode'], 'ai' ); ?>><?php echo esc_html( o3dai_t( 'mode_ai' ) . ( O3DAI_License::is_pro() ? '' : ' — PRO' ) ); ?></option>
-										<?php endif; ?>										<option value="stock" <?php selected( $s['image_mode'], 'stock' ); ?>><?php echo esc_html( o3dai_t( 'mode_stock' ) ); ?></option>
+									<option value="ai" <?php selected( $s['image_mode'], 'ai' ); ?>><?php echo esc_html( o3dai_t( 'mode_ai' ) ); ?></option>
+						<option value="local" <?php selected( $s['image_mode'], 'local' ); ?>><?php echo esc_html( o3dai_t( 'mode_local' ) ); ?></option>
+<option value="stock" <?php selected( $s['image_mode'], 'stock' ); ?>><?php echo esc_html( o3dai_t( 'mode_stock' ) ); ?></option>
 										<option value="none" <?php selected( $s['image_mode'], 'none' ); ?>><?php echo esc_html( o3dai_t( 'mode_none' ) ); ?></option>
-									<?php if ( ! O3DAI_License::is_pro() && in_array( $s['image_mode'], array( 'ai', 'none' ), true ) ) : ?>
-										<div style="font-size:11px;color:#646970;margin-top:4px"><?php echo esc_html( o3dai_t( 'free_images_hint' ) ); ?></div>
-									<?php endif; ?>
 									</select>
 								</div>
-									<?php if ( ! O3DAI_License::is_free_build() ) : ?>
 <div class="o3d-field">
 									<label class="o3d-lbl"><?php echo esc_html( o3dai_t( 'image_generator' ) ); ?></label>
 									<select name="image_model">
 										<optgroup label="<?php echo esc_attr( o3dai_t( 'grp_openai' ) ); ?>">
-											<option value="gpt-image-1" <?php selected( $s['image_model'], 'gpt-image-1' ); ?>><?php echo esc_html( o3dai_t( 'img_gpt1' ) ); ?></option>
-											<option value="gpt-image-1-mini" <?php selected( $s['image_model'], 'gpt-image-1-mini' ); ?>><?php echo esc_html( o3dai_t( 'img_gpt1mini' ) ); ?></option>
+											<option value="gpt-image-2.5-flare" <?php selected( $s['image_model'], 'gpt-image-2.5-flare' ); ?>><?php echo esc_html( o3dai_t( 'img_gpt25f' ) ); ?></option>
+											<option value="gpt-image-2.5-sunburst" <?php selected( $s['image_model'], 'gpt-image-2.5-sunburst' ); ?>><?php echo esc_html( o3dai_t( 'img_gpt25s' ) ); ?></option>
 										</optgroup>
 										<optgroup label="<?php echo esc_attr( o3dai_t( 'grp_google' ) ); ?>">
-											<option value="gemini-2.5-flash-image" <?php selected( $s['image_model'], 'gemini-2.5-flash-image' ); ?>><?php echo esc_html( o3dai_t( 'img_nb1' ) ); ?></option>
+											<option value="gemini-3-pro-image" <?php selected( $s['image_model'], 'gemini-3-pro-image' ); ?>><?php echo esc_html( o3dai_t( 'img_gem3pro' ) ); ?></option>
 											<option value="gemini-3.1-flash-image-preview" <?php selected( $s['image_model'], 'gemini-3.1-flash-image-preview' ); ?>><?php echo esc_html( o3dai_t( 'img_nb2' ) ); ?></option>
 										</optgroup>
 									</select>
 								</div>
-								<?php endif; ?>
 							</div>
+
+							<!-- v1.9.0 – Lokálny PC (Stability Matrix / ComfyUI) -->
+							<div class="o3d-field">
+								<label class="o3d-lbl"><?php echo esc_html( o3dai_t( 'local_url_l' ) ); ?></label>
+								<input type="text" name="image_local_url" value="<?php echo esc_attr( $s['image_local_url'] ?? '' ); ?>" placeholder="http://192.168.0.10:8188">
+								<p class="description"><?php echo esc_html( o3dai_t( 'local_hint' ) ); ?></p>
+							</div>
+							<div class="o3d-field">
+								<label class="o3d-lbl"><?php echo esc_html( o3dai_t( 'local_model_l' ) ); ?></label>
+								<select name="image_local_model" id="o3dai-select-local-model">
+									<option value="" <?php selected( empty( $s['image_local_model'] ?? '' ) ); ?>><?php echo esc_html( o3dai_t( 'local_sel_auto_img' ) ); ?></option>
+								<?php if ( ! empty( $s['image_local_model'] ?? '' ) ) : ?>
+									<option value="<?php echo esc_attr( $s['image_local_model'] ); ?>" selected><?php echo esc_html( $s['image_local_model'] ); ?></option>
+									<?php endif; ?>
+								</select>
+								<p style="margin:8px 0 0"><button type="button" class="o3d-btn o3d-btn-ghost o3d-btn-sm" id="o3dai-load-local-models"><?php echo esc_html( o3dai_t( 'local_models_btn' ) ); ?></button></p>
+							<p class="description"><?php echo esc_html( o3dai_t( 'local_klein_hint' ) ); ?></p>
+							</div>
+							<div class="o3d-field">
+								<label class="o3d-lbl"><?php echo esc_html( o3dai_t( 'local_negative_l' ) ); ?></label>
+								<input type="text" name="image_local_negative" value="<?php echo esc_attr( $s['image_local_negative'] ?? '' ); ?>" placeholder="text, watermark, logo">
+							</div>
+							<div class="o3d-row2">
+								<div class="o3d-field">
+									<label class="o3d-lbl"><?php echo esc_html( o3dai_t( 'local_steps' ) ); ?></label>
+									<input type="number" name="image_local_steps" value="<?php echo esc_attr( $s['image_local_steps'] ?? 20 ); ?>" min="1" max="150">
+								</div>
+								<div class="o3d-field">
+									<label class="o3d-lbl"><?php echo esc_html( o3dai_t( 'local_cfg' ) ); ?></label>
+									<input type="number" name="image_local_cfg" value="<?php echo esc_attr( $s['image_local_cfg'] ?? 7 ); ?>" min="1" max="30" step="0.5">
+								</div>
+							</div>
+							<div class="o3d-row2">
+								<div class="o3d-field">
+									<label class="o3d-lbl"><?php echo esc_html( o3dai_t( 'local_width' ) ); ?></label>
+									<input type="number" name="image_local_width" value="<?php echo esc_attr( $s['image_local_width'] ?? 1152 ); ?>" min="64" max="2048">
+								</div>
+								<div class="o3d-field">
+									<label class="o3d-lbl"><?php echo esc_html( o3dai_t( 'local_height' ) ); ?></label>
+									<input type="number" name="image_local_height" value="<?php echo esc_attr( $s['image_local_height'] ?? 768 ); ?>" min="64" max="2048">
+								</div>
+							</div>
+
 							<div class="o3d-field">
 								<label class="o3d-lbl"><?php echo esc_html( o3dai_t( 'stock_provider' ) ); ?></label>
 								<select name="stock_provider">
@@ -1141,7 +1261,7 @@ class O3DAI_Admin {
 							</div>
 							<div class="o3d-field">
 								<label class="o3d-lbl"><?php echo esc_html( o3dai_t( 'image_style_l' ) ); ?></label>
-								<textarea name="image_style" rows="3"><?php echo esc_textarea( $s['image_style'] ); ?></textarea>
+								<textarea name="image_style" rows="3" placeholder="<?php echo esc_attr( o3dai_t( 'w_ph_style' ) ); ?>"><?php echo esc_textarea( $s['image_style'] ); ?></textarea>
 								<p class="description"><?php echo esc_html( o3dai_t( 'image_style_hint' ) ); ?></p>
 							</div>
 							<div class="o3d-field">
@@ -1152,7 +1272,7 @@ class O3DAI_Admin {
 						</div>
 
 						<div class="o3d-card">
-							<h2><span class="dashicons dashicons-admin-links"></span> <?php echo esc_html( o3dai_t( 'card_seo' ) ); ?> <?php if ( ! O3DAI_License::is_pro() ) { echo wp_kses_post( O3DAI_License::pro_badge() ); } ?></h2>
+							<h2><span class="dashicons dashicons-admin-links"></span> <?php echo esc_html( o3dai_t( 'card_seo' ) ); ?></h2>
 							<div class="o3d-field">
 								<label class="o3d-lbl"><?php echo esc_html( o3dai_t( 'seo_plugin' ) ); ?></label>
 								<?php if ( O3DAI_SEO::label() ) : ?>
@@ -1167,7 +1287,12 @@ class O3DAI_Admin {
 									<label for="o3d-il" class="o3d-lbl" style="margin:0"><?php echo esc_html( o3dai_t( 'link_toggle' ) ); ?> <span class="description" style="font-weight:400">— <?php echo esc_html( o3dai_t( 'link_hint' ) ); ?></span></label>
 								</div>
 							</div>
-								<?php if ( ! O3DAI_License::is_free_build() ) : ?>
+							<div class="o3d-field">
+								<div class="o3d-toggle">
+									<input type="checkbox" id="o3d-pl" name="product_links" <?php checked( $s['product_links'] ?? 1, 1 ); ?>>
+									<label for="o3d-pl" class="o3d-lbl" style="margin:0"><?php echo esc_html( o3dai_t( 'product_links' ) ); ?> <span class="description" style="font-weight:400">— <?php echo esc_html( o3dai_t( 'product_links_hint' ) ); ?></span></label>
+								</div>
+							</div>
 <div class="o3d-field">
 								<label class="o3d-lbl">Google Search Console <?php echo O3DAI_GSC::is_connected() ? '<span class="o3d-pill">' . esc_html( o3dai_t( 'gsc_connected' ) ) . '</span>' : '<span class="o3d-pill" style="background:#fff4f4;color:#c0392b">' . esc_html( o3dai_t( 'gsc_disconnected' ) ) . '</span>'; ?></label>
 								<?php if ( ! O3DAI_GSC::is_connected() ) : ?>
@@ -1209,14 +1334,11 @@ class O3DAI_Admin {
 									</div>
 								<?php endif; ?>
 							</div>
-							<?php endif; ?>
-								<?php if ( ! O3DAI_License::is_free_build() ) : ?>
 <div class="o3d-field">
 								<label class="o3d-lbl"><?php echo esc_html( o3dai_t( 'serper_key_l' ) ); ?> <span class="description" style="font-weight:400"><?php echo esc_html( o3dai_t( 'serper_opt' ) ); ?></span></label>
 								<input type="password" name="serper_key" value="<?php echo esc_attr( $s['serper_key'] ?? '' ); ?>" placeholder="Serper.dev API key">
 								<p class="description"><?php echo esc_html( o3dai_t( 'serper_hint' ) ); ?></p>
 							</div>
-							<?php endif; ?>
 							<div class="o3d-field">
 								<label class="o3d-lbl"><?php echo esc_html( o3dai_t( 'own_queries' ) ); ?> <span class="description" style="font-weight:400"><?php echo esc_html( o3dai_t( 'optional' ) ); ?></span></label>
 								<textarea name="gsc_queries" rows="3" placeholder="<?php echo esc_attr( o3dai_t( 'own_queries_ph' ) ); ?>"><?php echo esc_textarea( $s['gsc_queries'] ?? '' ); ?></textarea>
@@ -1305,12 +1427,58 @@ class O3DAI_Admin {
 				</div>
 			</div>
 
-			<div class="o3d-tabpanel" data-panel="debug" role="tabpanel">
+			<!-- v1.9.0 – Testy: generovanie obrazku bez clanku -->
+		<div class="o3d-tabpanel" data-panel="test" role="tabpanel">
+				<div class="o3d-card">
+					<h2><span class="dashicons dashicons-experiments"></span> <?php echo esc_html( o3dai_t( 'card_test' ) ); ?></h2>
+					<p class="description"><?php echo esc_html( o3dai_t( 'test_hint' ) ); ?></p>
+					<div class="o3d-field">
+						<label class="o3d-lbl"><?php echo esc_html( o3dai_t( 'test_prompt_l' ) ); ?></label>
+						<textarea id="o3d-test-prompt" rows="3" placeholder="<?php echo esc_attr( o3dai_t( 'test_prompt_ph' ) ); ?>"></textarea>
+					</div>
+					<p style="margin:10px 0"><button type="button" class="o3d-btn o3d-btn-primary" id="o3d-test-run">▶ <?php echo esc_html( o3dai_t( 'test_btn' ) ); ?></button></p>
+					<div id="o3d-test-out"></div>
+				</div>
+
+		<script>
+		(function () {
+			var btn = document.getElementById( 'o3d-test-run' );
+			if ( ! btn ) { return; }
+			btn.addEventListener( 'click', function () {
+				var out = document.getElementById( 'o3d-test-out' );
+				var promptEl = document.getElementById( 'o3d-test-prompt' );
+				if ( ! promptEl || ! promptEl.value.trim() ) {
+					out.innerHTML = '<div class="o3d-card" style="border-color:#e8b7b0;color:#c0392b;padding:12px 16px">' + <?php echo wp_json_encode( o3dai_t( 'test_empty_prompt' ) ); ?> + '</div>';
+					return;
+				}
+				var orig = btn.textContent;
+				btn.disabled = true;
+				btn.textContent = '<?php echo esc_js( o3dai_t( 'test_busy' ) ); ?>';
+				out.innerHTML = '';
+				fetch( '<?php echo esc_js( admin_url( 'admin-ajax.php' ) ); ?>', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'action=o3dai_test_image&nonce=<?php echo esc_js( wp_create_nonce( 'o3dai_test' ) ); ?>&prompt=' + encodeURIComponent( promptEl.value.trim() ) } )
+					.then(function ( r ) { return r.json(); })
+					.then(function ( data ) {
+						if ( data.success && data.data.img ) {
+							out.innerHTML = '<img src="' + data.data.img + '" alt="" style="max-width:100%;border-radius:12px;border:1px solid #ece9f3;margin-top:4px"><p class="description" style="margin-top:8px">✅ ' + <?php echo wp_json_encode( o3dai_t( 'test_done' ) ); ?> + data.data.secs + '</p>';
+						} else {
+							out.innerHTML = '<div class="o3d-card" style="border-color:#e8b7b0;color:#c0392b;padding:12px 16px">' + ( data.data.message || '?' ) + '</div>';
+						}
+					})
+					.catch(function () {
+						out.innerHTML = '<div class="o3d-card" style="border-color:#e8b7b0;color:#c0392b;padding:12px 16px">⚠️ ' + <?php echo wp_json_encode( o3dai_t( 'test_net_err' ) ); ?> + '</div>';
+					})
+					.then(function () { btn.disabled = false; btn.textContent = orig; });
+			});
+		})();
+		</script>
+		</div>
+
+		<div class="o3d-tabpanel" data-panel="debug" role="tabpanel">
 					<div class="o3d-card o3d-debug">
 						<h2><span class="dashicons dashicons-search"></span> <?php echo esc_html( o3dai_t( 'card_debug' ) ); ?></h2>
 						<div class="o3d-field">
 							<label class="o3d-lbl"><?php echo esc_html( o3dai_t( 'last_outline' ) ); ?></label>
-							<pre><?php echo esc_html( get_option( 'o3dai_last_outline', '— zatiaľ žiadna —' ) ); ?></pre>
+							<pre><?php echo esc_html( get_option( 'o3dai_last_outline', o3dai_t( 'none_yet_f' ) ) ); ?></pre>
 						</div>
 						<div class="o3d-field">
 							<label class="o3d-lbl"><?php echo esc_html( o3dai_t( 'last_img_prompt' ) ); ?></label>
@@ -1322,7 +1490,350 @@ class O3DAI_Admin {
 					</div>
 			</div>
 
+		<!-- v1.9.8 – load-models error shown visibly under the button -->
+		<script>
+		function o3daiLoadErr( btn, msg ) {
+			var host = btn.parentNode;
+			if ( ! host ) { return; }
+			var oldEl = host.querySelector( '.o3d-load-err' );
+			if ( oldEl && oldEl.parentNode ) { oldEl.parentNode.removeChild( oldEl ); }
+			if ( ! msg ) { return; }
+			var p = document.createElement( 'p' );
+			p.className = 'o3d-load-err';
+			p.style.cssText = 'color:#b3261e;margin:4px 0 0;font-size:12px';
+			p.textContent = msg;
+			host.appendChild( p );
+		}
+		</script>
+		<script>
+		(function () {
+			var btn = document.getElementById( 'o3dai-load-local-models' );
+			if ( ! btn ) { return; }
+			var sel = document.querySelector( 'select[name="image_local_model"]' );
+			btn.addEventListener( 'click', function () {
+				var urlEl = document.querySelector( 'input[name="image_local_url"]' );
+				if ( ! urlEl || ! urlEl.value ) { alert( <?php echo wp_json_encode( o3dai_t( 'local_err_nourl' ) ); ?> ); return; }
+				var orig = btn.textContent;
+				btn.disabled = true;
+				btn.textContent = '⏳ …';
+				fetch( '<?php echo esc_js( admin_url( 'admin-ajax.php' ) ); ?>', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'action=o3dai_local_models&nonce=<?php echo esc_js( wp_create_nonce( 'o3dai_local' ) ); ?>&url=' + encodeURIComponent( urlEl.value ) } )
+					.then(function ( r ) { return r.json(); })
+					.then(function ( data ) {
+						if ( ! sel ) { return; }
+						var prev = sel.value || '';
+						while ( sel.options.length > 1 ) { sel.remove( 1 ); }
+						if ( data.success && data.data.models.length > 0 ) {
+							data.data.models.forEach(function ( m ) {
+								var o = document.createElement( 'option' );
+								o.text = m;
+								o.value = m;
+								sel.appendChild( o );
+							} );
+							var found = false;
+							for ( var i = 0; i < sel.options.length; i++ ) { if ( prev !== '' && sel.options[i].value === prev ) { sel.selectedIndex = i; found = true; break; } }
+							if ( ! found ) { sel.value = ''; }
+							btn.textContent = '✅ ' + data.data.models.length;
+							o3daiLoadErr( btn, '' );
+						} else {
+							var emsg = '';
+							if ( data.success ) {
+								emsg = <?php echo wp_json_encode( o3dai_t( 'local_err_no_models' ) ); ?>;
+							} else if ( data.data && data.data.message ) {
+								emsg = data.data.message;
+							}
+							o3daiLoadErr( btn, emsg );
+							btn.textContent = '⚠️';
+						}
+					})
+					.catch(function () { o3daiLoadErr( btn, <?php echo wp_json_encode( o3dai_t( 'local_err_fetchfail' ) ); ?> ); btn.textContent = '⚠️'; })
+					.then(function () {
+						btn.disabled = false;
+						setTimeout( function () { btn.textContent = orig; }, 4000 );
+					} );
+			});
+		})();
+		</script>
+
+		<!-- v1.9.x – Lokálny PC TEXT: načítanie zoznamu modelov zo servera -->
+		<script>
+		(function () {
+			var btn = document.getElementById( 'o3dai-load-local-text-models' );
+			if ( ! btn ) { return; }
+			var sel = document.querySelector( 'select[name="text_local_model"]' );
+			btn.addEventListener( 'click', function () {
+				var urlEl = document.querySelector( 'input[name="text_local_url"]' );
+				if ( ! urlEl || ! urlEl.value ) { alert( <?php echo wp_json_encode( o3dai_t( 'local_text_err_nourl' ) ); ?> ); return; }
+				var orig = btn.textContent;
+				btn.disabled = true;
+				btn.textContent = '⏳ …';
+				fetch( '<?php echo esc_js( admin_url( 'admin-ajax.php' ) ); ?>', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'action=o3dai_local_text_models&nonce=<?php echo esc_js( wp_create_nonce( 'o3dai_local' ) ); ?>&url=' + encodeURIComponent( urlEl.value ) } )
+					.then(function ( r ) { return r.json(); })
+					.then(function ( data ) {
+						if ( ! sel ) { return; }
+						var prev = sel.value || '';
+						while ( sel.options.length > 1 ) { sel.remove( 1 ); }
+						if ( data.success && data.data.models.length > 0 ) {
+							data.data.models.forEach(function ( m ) {
+								var o = document.createElement( 'option' );
+								o.text = m;
+								o.value = m;
+								sel.appendChild( o );
+							} );
+							var found = false;
+							for ( var i = 0; i < sel.options.length; i++ ) { if ( prev !== '' && sel.options[i].value === prev ) { sel.selectedIndex = i; found = true; break; } }
+							if ( ! found ) { sel.value = ''; }
+							btn.textContent = '✅ ' + data.data.models.length;
+							o3daiLoadErr( btn, '' );
+						} else {
+							var emsg = '';
+							if ( data.success ) {
+								emsg = <?php echo wp_json_encode( o3dai_t( 'local_err_no_models' ) ); ?>;
+							} else if ( data.data && data.data.message ) {
+								emsg = data.data.message;
+							}
+							o3daiLoadErr( btn, emsg );
+							btn.textContent = '⚠️';
+						}
+					})
+					.catch(function () { o3daiLoadErr( btn, <?php echo wp_json_encode( o3dai_t( 'local_err_fetchfail' ) ); ?> ); btn.textContent = '⚠️'; })
+					.then(function () {
+						btn.disabled = false;
+						setTimeout( function () { btn.textContent = orig; }, 4000 );
+					} );
+			});
+		})();
+		</script>
+
+		<!-- v1.9.x – Lokálny PC TEXT cez ComfyUI: zoznam textových modelov (models/text_encoders) -->
+		<script>
+		(function () {
+			var btn = document.getElementById( 'o3dai-load-text-comfy-models' );
+			if ( ! btn ) { return; }
+			var sel = document.querySelector( 'select[name="text_comfy_model"]' );
+			btn.addEventListener( 'click', function () {
+				var urlEl  = document.querySelector( 'input[name="text_comfy_url"]' );
+				var imgUrl = document.querySelector( 'input[name="image_local_url"]' );
+				var url    = ( urlEl && urlEl.value ) ? urlEl.value : ( imgUrl ? imgUrl.value : '' ); // fallback: ten istý ComfyUI ako na obrázky
+				if ( ! url ) { alert( <?php echo wp_json_encode( o3dai_t( 'local_text_err_nourl' ) ); ?> ); return; }
+				var orig = btn.textContent;
+				btn.disabled = true;
+				btn.textContent = '⏳ …';
+				fetch( '<?php echo esc_js( admin_url( 'admin-ajax.php' ) ); ?>', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'action=o3dai_text_comfy_models&nonce=<?php echo esc_js( wp_create_nonce( 'o3dai_local' ) ); ?>&url=' + encodeURIComponent( url ) } )
+					.then(function ( r ) { return r.json(); })
+					.then(function ( data ) {
+						if ( ! sel ) { return; }
+						var prev = sel.value || '';
+						while ( sel.options.length > 1 ) { sel.remove( 1 ); }
+						if ( data.success && data.data.models.length > 0 ) {
+							data.data.models.forEach(function ( m ) {
+								var o = document.createElement( 'option' );
+								o.text = m;
+								o.value = m;
+								sel.appendChild( o );
+							} );
+							var found = false;
+							for ( var i = 0; i < sel.options.length; i++ ) { if ( prev !== '' && sel.options[i].value === prev ) { sel.selectedIndex = i; found = true; break; } }
+							if ( ! found ) { sel.value = ''; }
+							btn.textContent = '✅ ' + data.data.models.length;
+							o3daiLoadErr( btn, '' );
+						} else {
+							var emsg = '';
+							if ( data.success ) {
+								emsg = <?php echo wp_json_encode( o3dai_t( 'local_err_no_models' ) ); ?>;
+							} else if ( data.data && data.data.message ) {
+								emsg = data.data.message;
+							}
+							o3daiLoadErr( btn, emsg );
+							btn.textContent = '⚠️';
+						}
+					})
+					.catch(function () { o3daiLoadErr( btn, <?php echo wp_json_encode( o3dai_t( 'local_err_fetchfail' ) ); ?> ); btn.textContent = '⚠️'; })
+					.then(function () {
+						btn.disabled = false;
+						setTimeout( function () { btn.textContent = orig; }, 4000 );
+					} );
+			});
+		})();
+		</script>
+
 		<?php
+	}
+
+	/** v1.8.0 – náhľad článku + regenerácia jednotlivých H2 sekcií */
+	public static function article_preview() {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			return;
+		}
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only display page, id comes from our own admin URL
+		$post_id = isset( $_GET['id'] ) ? absint( $_GET['id'] ) : 0;
+		$post    = $post_id ? get_post( $post_id ) : null;
+		if ( ! $post || 'post' !== $post->post_type ) {
+			echo '<div class="wrap"><p>' . esc_html( o3dai_t( 'preview_missing' ) ) . '</p></div>';
+			return;
+		}
+		$sections = O3DAI_Generator::article_sections( $post->post_content );
+		$nonce    = wp_create_nonce( 'o3dai_regen' );
+		?>
+		<div class="wrap o3d-wrap">
+			<style>
+				.o3d-article-body h2 { margin: 18px 0 8px; font-size: 19px; color: #2B2350; }
+				.o3d-article-body p { margin: 0 0 12px; line-height: 1.65; }
+				.o3d-article-body ul, .o3d-article-body ol { margin: 0 0 14px; padding-left: 22px; }
+			</style>
+			<div class="o3d-hero" style="padding:14px 20px">
+				<h1 style="margin-top:0;font-size:20px"><a href="<?php echo esc_url( admin_url( 'admin.php?page=o3dai' ) ); ?>" style="color:#6C4AB6">&larr;</a> 🤖 <?php echo esc_html( get_the_title( $post_id ) ); ?></h1>
+				<p class="description"><?php echo esc_html( o3dai_t( 'sections_hint' ) ); ?> &nbsp; <a href="<?php echo esc_url( get_edit_post_link( $post_id, '' ) ); ?>">✏️ <?php echo esc_html( o3dai_t( 'edit_arrow' ) ); ?></a></p>
+			</div>
+			<div class="o3d-card" style="margin-bottom:16px">
+				<p style="margin:0 0 8px;font-size:13px;color:#6c6480"><?php echo esc_html( o3dai_t( 'img_regen_hint' ) ); ?></p>
+				<button type="button" class="o3d-btn" id="o3dai-regen-img">🖼️ <?php echo esc_html( o3dai_t( 'btn_regen_image' ) ); ?></button>
+			</div>
+			<?php if ( ! $sections ) : ?>
+				<div class="o3d-card"><p><?php echo esc_html( o3dai_t( 'preview_empty' ) ); ?></p></div>
+			<?php else : ?>
+				<p style="margin:4px 0 12px;font-size:13px;color:#6c6480"><?php echo esc_html( o3dai_t( 'sections_title' ) ); ?></p>
+				<?php foreach ( $sections as $o3d_si => $o3d_sec ) : ?>
+					<div class="o3d-card" style="margin-bottom:16px">
+						<h2 style="font-size:13px;color:#8b83a3;text-transform:uppercase;letter-spacing:.5px;margin-top:0"><?php echo esc_html( ( 0 === $o3d_si ) ? o3dai_t( 'section_intro' ) : ( intval( $o3d_si ) + 1 ) . '.&nbsp;' ); ?></h2>
+						<div class="o3d-article-body"><?php echo wp_kses_post( $o3d_sec ); ?></div>
+						<p style="margin-top:14px"><button type="button" class="button o3d-regen-sec" data-idx="<?php echo (int) $o3d_si; ?>">🔄 <?php echo esc_html( o3dai_t( 'btn_regen_section' ) ); ?></button></p>
+					</div>
+				<?php endforeach; ?>
+			<?php endif; ?>
+			<script>
+			(function () {
+				var ajaxUrl = '<?php echo esc_js( admin_url( 'admin-ajax.php' ) ); ?>';
+				var nonce   = '<?php echo esc_js( $nonce ); ?>';
+				var postId  = <?php echo (int) $post_id; ?>;
+				var imgBtn = document.getElementById( 'o3dai-regen-img' );
+				if ( imgBtn ) {
+					imgBtn.addEventListener( 'click', function () {
+						if ( imgBtn.disabled ) { return; }
+						var label = imgBtn.innerHTML;
+						imgBtn.disabled = true;
+						imgBtn.textContent = '⏳ <?php echo esc_js( o3dai_t( 'img_regen_busy' ) ); ?>';
+						fetch( ajaxUrl, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'action=o3dai_regen_image&nonce=' + encodeURIComponent( nonce ) + '&post_id=' + postId } )
+							.then(function ( r ) { return r.json(); })
+							.then(function ( data ) {
+								if ( data && data.success ) { location.reload(); }
+								else { imgBtn.disabled = false; imgBtn.innerHTML = label; alert( ( data && data.data && data.data.message ) ? data.data.message : 'Error' ); }
+							})
+							.catch(function ( e ) { imgBtn.disabled = false; imgBtn.innerHTML = label; alert( String( e ) ); });
+					});
+				}
+				document.querySelectorAll( '.o3d-regen-sec' ).forEach(function ( btn ) {
+					btn.addEventListener( 'click', function () {
+						if ( btn.disabled ) { return; }
+						var label = btn.innerHTML;
+						btn.disabled = true;
+						btn.textContent = '⏳ <?php echo esc_js( o3dai_t( 'section_regen_busy' ) ); ?>';
+						fetch( ajaxUrl, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'action=o3dai_regen_section&nonce=' + encodeURIComponent( nonce ) + '&post_id=' + postId + '&idx=' + btn.getAttribute( 'data-idx' ) } )
+							.then(function ( r ) { return r.json(); })
+							.then(function ( data ) {
+								if ( data && data.success ) { location.reload(); }
+								else { btn.disabled = false; btn.innerHTML = label; alert( ( data && data.data && data.data.message ) ? data.data.message : 'Error' ); }
+							})
+							.catch(function ( e ) { btn.disabled = false; btn.innerHTML = label; alert( String( e ) ); });
+					});
+				});
+			})();
+			</script>
+		</div>
+		<?php
+	}
+
+	/** v1.8.0 – AJAX: prepis jednej sekcie článku */
+	public static function ajax_regen_section() {
+		check_ajax_referer( 'o3dai_regen', 'nonce' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( array( 'message' => 'Permission denied.' ) );
+		}
+		$post_id = isset( $_POST['post_id'] ) ? absint( $_POST['post_id'] ) : 0;
+		$idx     = isset( $_POST['idx'] ) ? absint( $_POST['idx'] ) : -1;
+		$res     = O3DAI_Generator::regen_section( $post_id, $idx );
+		if ( is_wp_error( $res ) ) {
+			wp_send_json_error( array( 'message' => $res->get_error_message() ) );
+		}
+		wp_send_json_success( array( 'message' => o3dai_t( 'section_done' ) ) );
+	}
+
+	/** v1.9.x – AJAX: pregenerovanie ilustračného obrázka článku (anglický prompt odvodený z obsahu) */
+	public static function ajax_regen_image() {
+		check_ajax_referer( 'o3dai_regen', 'nonce' );
+		if ( ! current_user_can( 'manage_options' ) ) { wp_send_json_error( array( 'message' => 'Permission denied.' ) ); }
+		$post_id = isset( $_POST['post_id'] ) ? absint( $_POST['post_id'] ) : 0;
+		$ok      = O3DAI_Generator::regenerate_image( $post_id );
+		if ( ! $ok ) { wp_send_json_error( array( 'message' => o3dai_t( 'img_regen_fail' ) ) ); }
+		wp_send_json_success( array( 'message' => o3dai_t( 'img_regen_done' ) ) );
+	}
+
+	/** v1.9.x – AJAX: zoznam textových modelov z lokálneho PC (Ollama / LM Studio). */
+	public static function ajax_local_text_models() {
+		check_ajax_referer( 'o3dai_local', 'nonce' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( array( 'message' => 'Permission denied.' ) );
+		}
+		$url    = isset( $_POST['url'] ) ? esc_url_raw( wp_unslash( $_POST['url'] ) ) : '';
+		$models = O3DAI_Providers::text_local_models( $url );
+		if ( is_wp_error( $models ) ) {
+			wp_send_json_error( array( 'message' => $models->get_error_message() ) );
+		}
+		wp_send_json_success( array( 'models' => $models ) );
+	}
+
+	/** v1.9.x – AJAX: zoznam textových modelov priamo zo ComfyUI (CLIPLoader.clip_name = models/text_encoders). */
+	public static function ajax_text_comfy_models() {
+		check_ajax_referer( 'o3dai_local', 'nonce' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( array( 'message' => 'Permission denied.' ) );
+		}
+		$url = isset( $_POST['url'] ) ? esc_url_raw( wp_unslash( $_POST['url'] ) ) : '';
+		$models = O3DAI_Providers::text_comfy_models( $url );
+		if ( is_wp_error( $models ) ) {
+			wp_send_json_error( array( 'message' => $models->get_error_message() ) );
+		}
+		wp_send_json_success( array( 'models' => $models ) );
+	}
+
+	/** v1.9.0 – AJAX: zoznam checkpointov z lokálneho ComfyUI (Stability Matrix). */
+	public static function ajax_local_models() {
+		check_ajax_referer( 'o3dai_local', 'nonce' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( array( 'message' => 'Permission denied.' ) );
+		}
+		$url = isset( $_POST['url'] ) ? esc_url_raw( wp_unslash( $_POST['url'] ) ) : '';
+		$models = O3DAI_Providers::local_comfy_models( $url );
+		if ( is_wp_error( $models ) ) {
+			wp_send_json_error( array( 'message' => $models->get_error_message() ) );
+		}
+		wp_send_json_success( array( 'models' => array_slice( $models, 0, 500 ) ) );
+	}
+
+	/** v1.9.0 – AJAX: test generovania obrazku bez clanku (zalozka Testy). */
+	public static function ajax_test_image() {
+		check_ajax_referer( 'o3dai_test', 'nonce' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( array( 'message' => 'Permission denied.' ) );
+		}
+		$s      = o3dai_get_settings();
+		$mode   = (string) ( $s['image_mode'] ?? '' );
+		if ( ! in_array( $mode, array( 'ai', 'local' ), true ) ) {
+			wp_send_json_error( array( 'message' => o3dai_t( 'test_mode_err' ) ) );
+		}
+		$prompt = trim( sanitize_text_field( wp_unslash( $_POST['prompt'] ?? '' ) ) );
+		if ( '' === $prompt ) {
+			wp_send_json_error( array( 'message' => o3dai_t( 'test_empty_prompt' ) ) );
+		}
+		$started = microtime( true );
+		$bin     = O3DAI_Providers::generate_image( $prompt );
+		if ( is_wp_error( $bin ) ) {
+			wp_send_json_error( array( 'message' => $bin->get_error_message() ) );
+		}
+		$mime   = ( 0 === strpos( (string) $bin, "\x89PNG" ) ) ? 'image/png' : 'image/jpeg';
+		wp_send_json_success( array(
+			'img'  => 'data:' . $mime . ';base64,' . base64_encode( (string) $bin ),
+			'secs' => round( microtime( true ) - $started, 1 ),
+		) );
 	}
 }
 
